@@ -1,0 +1,35 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# SQLite databases (prevents leaking chat logs!)
+*.db
+*.sqlite
+*.sqlite3
+
+# Vector Databases (prevents leaking context/documents!)
+lancedb/
+lancedb_test/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# UV / Package caches
+.uv-cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
