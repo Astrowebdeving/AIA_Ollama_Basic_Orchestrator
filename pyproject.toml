@@ -1,0 +1,15 @@
+[project]
+name = "orchestrator"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "fastapi>=0.129.0",
+    "lancedb>=0.29.2",
+    "mcp>=1.11.0",
+    "ollama>=0.6.1",
+    "transformers>=5.2.0",
+    "uvicorn>=0.35.0",
+]
