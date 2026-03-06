@@ -1,5 +1,8 @@
 import json
+from typing import Any
+
 from transformers import AutoTokenizer
+
 from config import TOKENIZER_NAME, MAX_CONTEXT_TOKENS
 
 class ContextManager:
@@ -11,20 +14,32 @@ class ContextManager:
             # We use use_fast=True if available, but gemma tokenizer might need standard instantiation
             self.tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
             
-    def calculate_baseline_tokens(self, system_prompt: str, query: str, tool_schemas: list) -> int:
-        self.load_tokenizer()
-        
-        # Combine base content to estimate baseline
-        content_to_tokenize = system_prompt + "\n" + query + "\n"
-        
-        # Add tool schemas to the token string representation
+    # Dead code — replaced by count_message_tokens, which serialises the
+    # full message list instead of concatenating raw strings.
+    # def calculate_baseline_tokens(self, system_prompt, query, tool_schemas):
+    #     self.load_tokenizer()
+    #     content = system_prompt + "\n" + query + "\n"
+    #     if tool_schemas:
+    #         content += json.dumps(tool_schemas)
+    #     return len(self.tokenizer.encode(content))
+
+    def count_message_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        tool_schemas: list | None = None,
+    ) -> int:
+        serialized_messages = json.dumps(
+            messages,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         if tool_schemas:
-            content_to_tokenize += json.dumps(tool_schemas)
-            
-        tokens = self.tokenizer.encode(content_to_tokenize)
-        baseline = len(tokens)
-        
-        return baseline
+            serialized_messages += json.dumps(
+                tool_schemas,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return self.count_tokens(serialized_messages)
         
     def get_dynamic_budget(self, baseline_tokens: int) -> int:
         return max(0, MAX_CONTEXT_TOKENS - baseline_tokens)

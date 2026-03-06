@@ -1,83 +1,164 @@
-# Ollama Basic Orchestrator
+# Gemma 3 Orchestrator
 
-A lightweight, local LLM orchestrator built with FastAPI, designed to integrate Ollama models (such as `gemma3:27b`) with the Model Context Protocol (MCP) and dynamic RAG (Retrieval-Augmented Generation).
+Local LLM orchestrator built with FastAPI. Connects Ollama-hosted models (default: `gemma3:27b`) with MCP tool servers, vector-backed RAG, telemetry ingestion, and automatic context management.
 
-## Features
+## Quick Start
 
-- **Local Execution:** Fully local inference via Ollama, ensuring privacy and control over your data.
-- **MCP Tool Integration:** Automatically discovers and connects to MCP servers via stdio, translating MCP schemas into Ollama-compatible function calling formats.
-- **Dynamic Context Budgeting:** Intelligently manages context windows (e.g., 128k tokens for Gemma 3) to prevent overflow while accommodating tool results and RAG contexts.
-- **Built-in RAG:** Seamless vector embedding and retrieval using LanceDB and Ollama's embedding models (e.g., `nomic-embed-text`).
-- **Query Logging:** Asynchronous logging of user queries and context usage to an SQLite database (`logs.db`).
+```bash
+# Install dependencies (requires Python 3.12+)
+uv sync
 
-## Setup
+# Pull required Ollama models (always needed for embeddings)
+ollama pull qwen3-embedding:0.6b
 
-### Prerequisites
+# Pull a chat model (if using Ollama as the chat backend)
+ollama pull gemma3:27b
 
-- Python 3.10+
-- [Ollama](https://ollama.com/) running locally or accessible via network.
-- Node.js (if utilizing npx for MCP servers like `@modelcontextprotocol/server-filesystem`).
+# Run (defaults to Ollama backend)
+uv run python main.py
+```
 
-### Installation
+The server starts on `http://0.0.0.0:8000`.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Astrowebdeving/AIA_Ollama_Basic_Orchestrator.git
-   cd AIA_Ollama_Basic_Orchestrator
-   ```
+## Endpoints
 
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/chat` | Agentic chat with MCP tool calling and RAG context |
+| POST | `/telemetry` | Ingest a single telemetry event |
+| POST | `/telemetry/batch` | Ingest multiple telemetry events |
+| GET | `/context` | Token usage breakdown from the last `/chat` call |
+| GET | `/health` | Ollama connectivity, model availability, MCP tool count |
 
-3. Install requirements (example, ensure you have the necessary packages):
-   ```bash
-   pip install fastapi uvicorn pydantic transformers aiosqlite lancedb mcp ollama
-   ```
+### POST /chat
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "What telemetry events happened in the last hour?"}
+  ],
+  "stream": true
+}
+```
+
+The model can autonomously call MCP tools during its response. Tool results are fed back into the conversation and the model generates a final answer.
+
+### POST /telemetry
+
+```json
+{
+  "source": "suit_sensors",
+  "event_type": "pressure_reading",
+  "severity": "warning",
+  "payload": {"psi": 12.3, "module": "EVA-01"},
+  "description": "Suit pressure dropped below nominal range"
+}
+```
+
+Events are stored in SQLite (`logs.db`). The LLM can query them via MCP tools.
 
 ## Configuration
 
-Configuration is managed via environment variables (or directly in `config.py`). Key settings include:
+All settings are read from environment variables (with defaults). Create a `.env` file in the project root to override:
 
-- `OLLAMA_HOST`: URL to your Ollama instance (default: `http://localhost:11434`)
-- `LLM_MODEL`: The LLM to use (default: `gemma3:27b`)
-- `EMBED_MODEL`: The embedding model to use (default: `nomic-embed-text`)
-- `TOKENIZER_NAME`: Tokenizer for context budgeting (default: `google/gemma-3-27b-it`)
-- `MAX_CONTEXT_TOKENS`: Context window limit (default: `128000`)
+```env
+# LLM provider: "ollama" (default), "afm", "llamacpp"
+LLM_PROVIDER=ollama
+LLM_MODEL=gemma3:27b
+LLM_API_BASE=              # auto-set per provider if empty
 
-## Usage
+# Ollama (always needed for embeddings, also for chat when LLM_PROVIDER=ollama)
+OLLAMA_IP=10.207.22.21
+EMBED_MODEL=qwen3-embedding:0.6b
+EMBED_DIM=1024
 
-Start the orchestrator:
+# Context management
+MAX_CONTEXT_TOKENS=128000
+SUMMARIZE_THRESHOLD=64000
 
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+# Telemetry poller (optional)
+TELEMETRY_SOURCE_URL=http://your-telemetry-api/data
+TELEMETRY_POLL_INTERVAL=20
 ```
-*Note: Binding to `0.0.0.0` allows network access. Use `127.0.0.1` if you only want local machine access.*
 
-### Endpoints
+### Provider Defaults
 
-- **`POST /chat`**: The main interaction endpoint. Provide an array of messages and receive a streamed, tool-augmented response.
-  ```json
-  {
-    "messages": [
-      {"role": "user", "content": "What is the current status of the system?"}
-    ],
-    "stream": true
-  }
-  ```
-- **`GET /context`**: Returns token breakdown and context window utilization statistics for the most recent `/chat` request.
-- **`GET /health`**: System health check, reporting on Ollama connectivity, model availability, and connected MCP tools.
+| Provider | Default API base | Default model | Notes |
+|----------|-----------------|---------------|-------|
+| `ollama` | `http://{auto-detected-ip}:11434` | `gemma3:27b` | Full Ollama SDK |
+| `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | OpenAI-compatible (AFM/MLX) |
+| `llamacpp` | `http://localhost:8080` | `gemma3` | OpenAI-compatible (llama-server) |
+
+The Ollama host resolution order is: explicit `OLLAMA_HOST`, then `OLLAMA_IP`, then macOS auto-detection via `ipconfig getifaddr en0`, then the hardcoded default. Ollama is always required for embeddings regardless of the chat provider.
+
+### Switching Providers
+
+To use AFM/MLX (start the AFM server separately):
+```bash
+afm mlx -m mlx-community/Qwen3.5-35B-A3B-4bit -w --vlm \
+  --tool-call-parser qwen3_xml --max-kv-size 32768 --kv-bits 4 \
+  --enable-prefix-caching --prefill-step-size 2048 --max-tokens 16384 \
+  --port 9999
+
+LLM_PROVIDER=afm uv run python main.py
+```
+AFM context size is controlled by the AFM server's startup flags. The orchestrator still enforces its own local context budget, but it does not send a synthetic `max_tokens=128000` request to OpenAI-compatible backends.
+
+To use llama.cpp (start llama-server separately with `--jinja` for tool calling):
+```bash
+llama-server -m model.gguf --jinja --port 8080
+
+LLM_PROVIDER=llamacpp uv run python main.py
+```
+For llama.cpp as well, configure the backend context window on the server itself. The orchestrator handles local token budgeting and preserves OpenAI-style tool-call history when using compatible providers.
 
 ## Architecture
 
-- `main.py`: FastAPI application routing and the core agentic tool loop.
-- `mcp_client.py`: Manages subprocess connections to MCP servers, tool discovery, and execution.
-- `rag_service.py`: Handles vectorization and document retrieval using LanceDB.
-- `context_manager.py`: Manages token counting and dynamic context budget tracking to ensure the LLM does not exceed its context window.
-- `db_logger.py`: Provides asynchronous logging of queries.
+```
+orchestrator/
+  main.py                  FastAPI app, /chat agentic loop, /telemetry endpoints
+  config.py                All configuration, env var loading, MCP server wiring
+  llm_provider.py          Provider abstraction: Ollama, AFM/MLX, llama.cpp
+  mcp_client.py            MCP server lifecycle, tool discovery, tool execution
+  rag_service.py           Document chunking, embedding (qwen3), LanceDB storage/retrieval
+  context_manager.py       Token counting, budget calculation, truncation
+  context_summarizer.py    Auto-summarizes older messages when tokens exceed threshold
+  db_logger.py             SQLite tables: query_logs, telemetry_events
+  api_client.py            Skeleton for external JSON API access (not yet integrated)
+  mcp_servers/
+    sqlite_query_server.py       MCP server: read-only SQL against logs.db
+    telemetry_search_server.py   MCP server: telemetry queries, on-demand fetch, RAG indexing
+```
 
-## Security Warning
+### MCP Tools Available to the LLM
 
-If you configure `MCP_SERVERS` in `config.py` to expose file systems or execute commands (e.g., `@modelcontextprotocol/server-filesystem`), be extremely cautious about exposing the `0.0.0.0:8000` port to untrusted networks, as this can grant arbitrary read/write access to the host machine.
+| Tool | Server | Description |
+|------|--------|-------------|
+| `query_logs_db` | sqlite-query | Run read-only SQL against logs.db |
+| `describe_logs_db` | sqlite-query | List all table schemas |
+| `query_telemetry` | telemetry-search | Filter telemetry by source, type, severity, time |
+| `search_telemetry` | telemetry-search | Semantic search over the RAG knowledge base |
+| `telemetry_summary` | telemetry-search | Aggregate stats (counts, time range, recent events) |
+| `fetch_telemetry_now` | telemetry-search | On-demand fetch from telemetry source (bypasses 20s poller) |
+| `add_to_knowledge_base` | telemetry-search | LLM-driven: embed text into RAG for future retrieval |
+
+### Data Flow
+
+1. **Telemetry** arrives via `POST /telemetry` or the background poller (every 20s) and is stored in SQLite.
+2. **Chat** requests hit `/chat`, which retrieves RAG context from LanceDB, builds the message history, optionally summarizes old messages (if > 64k tokens), and enters the agentic tool loop.
+3. **Tool calls** are routed through `mcp_client.py` to the appropriate MCP server subprocess.
+4. **Knowledge indexing** happens when the LLM explicitly calls `add_to_knowledge_base` -- nothing is auto-embedded.
+
+### Embedding Model
+
+Default: `qwen3-embedding:0.6b` (1024-dimensional vectors). This is the unquantized variant -- smaller models degrade disproportionately from quantization. The model is configurable via `EMBED_MODEL` and `EMBED_DIM` for when a finetuned version is available.
+
+### Context Summarization
+
+When the total token count of a conversation exceeds `SUMMARIZE_THRESHOLD` (default 64k), older messages are automatically compressed via the LLM into a single summary message. The 4 most recent messages are always kept intact.
+
+## Security
+
+- MCP servers can expose file system access or execute commands. Do not expose port 8000 to untrusted networks.
+- The SQLite query tool restricts to `SELECT` / `PRAGMA` / `WITH` / `EXPLAIN` and opens the database in read-only mode.
+- The `.env` file is in `.gitignore`.

@@ -25,7 +25,7 @@ This is a **FastAPI Python orchestrator** that sits between clients and a local 
     └───────────────┘               └───────────────┘
 ```
 
-Both services bind to `0.0.0.0`, meaning **any machine on the local network** can reach them. The orchestrator calls Ollama via `localhost:11434` internally (configurable via `OLLAMA_HOST`).
+Both services bind to `0.0.0.0`, meaning **any machine on the local network** can reach them. The orchestrator calls Ollama via the configured `OLLAMA_HOST`, which defaults from `OLLAMA_IP` or local IP auto-detection.
 
 ---
 
@@ -61,8 +61,8 @@ The context manager is the **core safety mechanism** that prevents every request
 └─────────────────────────────────────────────────────────────┘
 ```
 
-1. **`calculate_baseline_tokens(system_prompt, query, tool_schemas)`**
-   Tokenizes everything that *must* be sent (system prompt, the user question, and all MCP tool JSON schemas). This is the non-negotiable floor.
+1. **`count_message_tokens(messages, tool_schemas)`**
+   Tokenizes the full serialized message list plus MCP tool JSON schemas. This is the non-negotiable floor for the current request.
 
 2. **`get_dynamic_budget(baseline)`**
    Returns `128,000 - baseline`. This is how many tokens are left for RAG context, tool results, and the model's own generation.
@@ -76,7 +76,7 @@ The context manager is the **core safety mechanism** that prevents every request
 | Method | What it does |
 |---|---|
 | `load_tokenizer()` | Lazy-loads the Gemma SentencePiece tokenizer (once) |
-| `calculate_baseline_tokens()` | Counts tokens for system prompt + query + tool schemas |
+| `count_message_tokens()` | Counts tokens for the serialized message history + tool schemas |
 | `get_dynamic_budget()` | `MAX_CONTEXT_TOKENS - baseline` |
 | `count_tokens(text)` | Exact token count for any string |
 | `truncate_to_budget(text, limit)` | Slice tokens to fit, append `[TRUNCATED BY ORCHESTRATOR]` |
@@ -88,11 +88,11 @@ The context manager is the **core safety mechanism** that prevents every request
 1. **Client** sends `POST /chat` with a `messages` array
 2. **Token budget** is computed (baseline from system prompt + query + tool schemas)
 3. **RAG** retrieves relevant document chunks from LanceDB, stopping when the budget is full
-4. **Ollama** is called with the assembled context + any available MCP tools. `num_ctx=128000` is passed explicitly so Ollama allocates the full window.
-5. If Ollama returns **tool_calls**:
+4. The **active chat backend** is called with the assembled context + any available MCP tools. On the default Ollama path, `num_ctx=128000` is passed explicitly so Ollama allocates the full window.
+5. If the active chat backend returns **tool_calls**:
    - Each call is routed to the appropriate MCP server
    - The result is tokenized and truncated if over-budget
-   - The result is appended to history and Ollama is called again
+   - The result is appended to history and the chat backend is called again
    - This loops up to 10 rounds (safety valve)
 6. The **final text response** is streamed back to the client
 
@@ -124,7 +124,7 @@ Returns the token breakdown from the most recent `/chat` call:
 ```
 
 ### `GET /health`
-Live-probes Ollama and reports model availability.
+Live-probes the active chat backend and reports model availability.
 
 ---
 
@@ -134,4 +134,4 @@ The orchestrator binds to **`0.0.0.0:8000`** — it is callable from any machine
 
 Ollama binds to **`0.0.0.0:11434`** — it remains directly callable at `http://<host-ip>:11434` for any client that wants to bypass the orchestrator.
 
-Both are independent. The orchestrator reaches Ollama via `localhost:11434` internally (this never leaves the machine).
+Both are independent. The orchestrator reaches Ollama via the configured `OLLAMA_HOST` internally.
