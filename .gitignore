@@ -7,7 +7,7 @@ ENV/
 env.bak/
 venv.bak/
 
-# SQLite databases (prevents leaking chat logs!)
+# Database files (safety net)
 *.db
 *.sqlite
 *.sqlite3
@@ -15,17 +15,21 @@ venv.bak/
 # Vector Databases (prevents leaking context/documents!)
 lancedb/
 lancedb_test/
+lancedb
 
 # Python caches
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.hf-cache/hub/
+.hf-cache/
 
 # UV / Package caches
 .uv-cache/
 .mypy_cache/
 .ruff_cache/
+uv.lock
 
 # IDEs and Editors
 .idea/

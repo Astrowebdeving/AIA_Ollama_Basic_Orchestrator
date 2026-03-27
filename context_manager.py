@@ -13,15 +13,6 @@ class ContextManager:
         if not self.tokenizer:
             # We use use_fast=True if available, but gemma tokenizer might need standard instantiation
             self.tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
-            
-    # Dead code — replaced by count_message_tokens, which serialises the
-    # full message list instead of concatenating raw strings.
-    # def calculate_baseline_tokens(self, system_prompt, query, tool_schemas):
-    #     self.load_tokenizer()
-    #     content = system_prompt + "\n" + query + "\n"
-    #     if tool_schemas:
-    #         content += json.dumps(tool_schemas)
-    #     return len(self.tokenizer.encode(content))
 
     def count_message_tokens(
         self,

@@ -1,6 +1,6 @@
 # Gemma 3 Orchestrator
 
-Local LLM orchestrator built with FastAPI. Connects Ollama-hosted models (default: `gemma3:27b`) with MCP tool servers, vector-backed RAG, telemetry ingestion, and automatic context management.
+Local LLM orchestrator built with FastAPI. Connects Ollama-hosted models (default: `gemma3:27b-it-qat`) with MCP tool servers and vector-backed RAG for conversation history. The LLM decides when to call tools — no auto-injection, no background polling.
 
 ## Quick Start
 
@@ -12,7 +12,7 @@ uv sync
 ollama pull qwen3-embedding:0.6b
 
 # Pull a chat model (if using Ollama as the chat backend)
-ollama pull gemma3:27b
+ollama pull gemma3:27b-it-qat
 
 # Run (defaults to Ollama backend)
 uv run python main.py
@@ -25,37 +25,21 @@ The server starts on `http://0.0.0.0:8000`.
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/chat` | Agentic chat with MCP tool calling and RAG context |
-| POST | `/telemetry` | Ingest a single telemetry event |
-| POST | `/telemetry/batch` | Ingest multiple telemetry events |
 | GET | `/context` | Token usage breakdown from the last `/chat` call |
-| GET | `/health` | Ollama connectivity, model availability, MCP tool count |
+| GET | `/health` | LLM backend connectivity, model availability, MCP tool count |
 
 ### POST /chat
 
 ```json
 {
   "messages": [
-    {"role": "user", "content": "What telemetry events happened in the last hour?"}
+    {"role": "user", "content": "What is the EVA1 oxygen status?"}
   ],
   "stream": true
 }
 ```
 
-The model can autonomously call MCP tools during its response. Tool results are fed back into the conversation and the model generates a final answer.
-
-### POST /telemetry
-
-```json
-{
-  "source": "suit_sensors",
-  "event_type": "pressure_reading",
-  "severity": "warning",
-  "payload": {"psi": 12.3, "module": "EVA-01"},
-  "description": "Suit pressure dropped below nominal range"
-}
-```
-
-Events are stored in SQLite (`logs.db`). The LLM can query them via MCP tools.
+The model can autonomously call MCP tools during its response. Tool results are fed back into the conversation and the model generates a final answer. After each response, the full exchange (user message, tool calls, assistant reply) is stored into the RAG knowledge base for future retrieval.
 
 ## Configuration
 
@@ -64,32 +48,33 @@ All settings are read from environment variables (with defaults). Create a `.env
 ```env
 # LLM provider: "ollama" (default), "afm", "llamacpp"
 LLM_PROVIDER=ollama
-LLM_MODEL=gemma3:27b
+LLM_MODEL=gemma3:27b-it-qat
 LLM_API_BASE=              # auto-set per provider if empty
 
 # Ollama (always needed for embeddings, also for chat when LLM_PROVIDER=ollama)
+OLLAMA_HOST=http://127.0.0.1:11434
 OLLAMA_IP=10.207.22.21
 EMBED_MODEL=qwen3-embedding:0.6b
 EMBED_DIM=1024
 
 # Context management
 MAX_CONTEXT_TOKENS=128000
-SUMMARIZE_THRESHOLD=64000
+SUMMARIZE_THRESHOLD=80000
 
-# Telemetry poller (optional)
-TELEMETRY_SOURCE_URL=http://your-telemetry-api/data
-TELEMETRY_POLL_INTERVAL=20
+# TSS Unity API (used by the get_tss_state MCP tool)
+TSS_API_BASE_URL=http://127.0.0.1:8100/api/v1
+TSS_API_TIMEOUT=10
 ```
 
 ### Provider Defaults
 
 | Provider | Default API base | Default model | Notes |
 |----------|-----------------|---------------|-------|
-| `ollama` | `http://{auto-detected-ip}:11434` | `gemma3:27b` | Full Ollama SDK |
+| `ollama` | `http://{auto-detected-ip}:11434` | `gemma3:27b-it-qat` | Full Ollama SDK |
 | `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | OpenAI-compatible (AFM/MLX) |
 | `llamacpp` | `http://localhost:8080` | `gemma3` | OpenAI-compatible (llama-server) |
 
-The Ollama host resolution order is: explicit `OLLAMA_HOST`, then `OLLAMA_IP`, then macOS auto-detection via `ipconfig getifaddr en0`, then the hardcoded default. Ollama is always required for embeddings regardless of the chat provider.
+The Ollama host resolution order is: preferred local `OLLAMA_HOST` (defaults to `http://127.0.0.1:11434`), then fallback `OLLAMA_IP` / `OLLAMA_FALLBACK_HOST`, then the first configured value if neither is reachable. Ollama is always required for embeddings regardless of the chat provider.
 
 ### Switching Providers
 
@@ -102,7 +87,6 @@ afm mlx -m mlx-community/Qwen3.5-35B-A3B-4bit -w --vlm \
 
 LLM_PROVIDER=afm uv run python main.py
 ```
-AFM context size is controlled by the AFM server's startup flags. The orchestrator still enforces its own local context budget, but it does not send a synthetic `max_tokens=128000` request to OpenAI-compatible backends.
 
 To use llama.cpp (start llama-server separately with `--jinja` for tool calling):
 ```bash
@@ -110,55 +94,98 @@ llama-server -m model.gguf --jinja --port 8080
 
 LLM_PROVIDER=llamacpp uv run python main.py
 ```
-For llama.cpp as well, configure the backend context window on the server itself. The orchestrator handles local token budgeting and preserves OpenAI-style tool-call history when using compatible providers.
 
 ## Architecture
 
 ```
 orchestrator/
-  main.py                  FastAPI app, /chat agentic loop, /telemetry endpoints
+  main.py                  FastAPI app, /chat agentic loop
   config.py                All configuration, env var loading, MCP server wiring
   llm_provider.py          Provider abstraction: Ollama, AFM/MLX, llama.cpp
   mcp_client.py            MCP server lifecycle, tool discovery, tool execution
-  rag_service.py           Document chunking, embedding (qwen3), LanceDB storage/retrieval
+  rag_service.py           Conversation history: chunk, embed, retrieve (LanceDB)
   context_manager.py       Token counting, budget calculation, truncation
-  context_summarizer.py    Auto-summarizes older messages when tokens exceed threshold
-  db_logger.py             SQLite tables: query_logs, telemetry_events
-  api_client.py            Skeleton for external JSON API access (not yet integrated)
+  context_summarizer.py    Auto-summarizes when conversation exceeds 80k tokens
+  api_client.py            Reusable async JSON API client (httpx)
   mcp_servers/
-    sqlite_query_server.py       MCP server: read-only SQL against logs.db
-    telemetry_search_server.py   MCP server: telemetry queries, on-demand fetch, RAG indexing
+    tss_tools_server.py    MCP server: get_tss_state, search_knowledge
+  tests/
+    test_api_client.py     Unit tests for ApiClient (mock transport)
+    test_revamp.py         Tests for TSS tool fetch + RAG conversation storage
 ```
 
 ### MCP Tools Available to the LLM
 
-| Tool | Server | Description |
-|------|--------|-------------|
-| `query_logs_db` | sqlite-query | Run read-only SQL against logs.db |
-| `describe_logs_db` | sqlite-query | List all table schemas |
-| `query_telemetry` | telemetry-search | Filter telemetry by source, type, severity, time |
-| `search_telemetry` | telemetry-search | Semantic search over the RAG knowledge base |
-| `telemetry_summary` | telemetry-search | Aggregate stats (counts, time range, recent events) |
-| `fetch_telemetry_now` | telemetry-search | On-demand fetch from telemetry source (bypasses 20s poller) |
-| `add_to_knowledge_base` | telemetry-search | LLM-driven: embed text into RAG for future retrieval |
+| Tool | Description |
+|------|-------------|
+| `get_tss_state` | Fetch live TSS data on-demand. Accepts `scope` parameter: `all`, `eva`, `ltv`, `health`, `vitals`. |
+| `search_knowledge` | Semantic search over past conversations and tool results stored in the RAG knowledge base. |
+
+The LLM decides when to call these tools based on the user's prompt. There is no auto-injection of TSS state and no background polling.
 
 ### Data Flow
 
-1. **Telemetry** arrives via `POST /telemetry` or the background poller (every 20s) and is stored in SQLite.
-2. **Chat** requests hit `/chat`, which retrieves RAG context from LanceDB, builds the message history, optionally summarizes old messages (if > 64k tokens), and enters the agentic tool loop.
-3. **Tool calls** are routed through `mcp_client.py` to the appropriate MCP server subprocess.
-4. **Knowledge indexing** happens when the LLM explicitly calls `add_to_knowledge_base` -- nothing is auto-embedded.
+```
+User → POST /chat
+  ↓
+1. Retrieve relevant past conversations from RAG (LanceDB)
+2. Build message list: [system_prompt] + [RAG context] + [user messages]
+3. If total tokens > 80k → summarize older conversation history
+4. Send to LLM
+5. LLM decides: answer directly OR call tools
+   ├── get_tss_state(scope=eva) → hits TSS Unity API → returns live data
+   └── search_knowledge("EVA oxygen") → queries LanceDB → returns past context
+6. Tool results fed back → LLM generates final answer
+7. Store full exchange (user + tools + assistant) into RAG
+8. Return response
+```
+
+### Dual Storage Strategy
+
+| What | Where | Used By |
+|------|-------|---------|
+| **Full exchange** (user + tool calls + results + assistant) | RAG (LanceDB) | `search_knowledge` tool — rich retrieval |
+| **Compact context** (user + assistant only) | Injected into prompt | Auto-retrieved from RAG on each `/chat` call |
+
+### TSS Unity API Integration
+
+The `get_tss_state` MCP tool fetches live telemetry from the TSS Unity API. To use it, start the TSS server stack:
+
+```bash
+# 1. Start the core TSS server
+cd ../TSS_Lunar_Lions/TSS2026-LunarLions
+./server.exe
+
+# 2. Start the Unity API wrapper
+cd backend
+python tss_unity_api.py --tss-host 127.0.0.1 --tss-port 14141 --api-host 0.0.0.0 --api-port 8100
+
+# 3. Run the orchestrator
+cd ../../../orchestrator
+TSS_API_BASE_URL=http://127.0.0.1:8100/api/v1 uv run python main.py
+```
+
+Notes:
+- The backend wrapper defaults `--tss-port` to `8080`, but the TSS server listens on `14141`. Pass `--tss-port 14141` explicitly.
+- The `/vitals` endpoint is called when `scope=all` or `scope=vitals` — it gracefully handles 404 on older TSS servers that don't support it.
 
 ### Embedding Model
 
-Default: `qwen3-embedding:0.6b` (1024-dimensional vectors). This is the unquantized variant -- smaller models degrade disproportionately from quantization. The model is configurable via `EMBED_MODEL` and `EMBED_DIM` for when a finetuned version is available.
+Default: `qwen3-embedding:0.6b` (1024-dimensional vectors). This is the unquantized variant — smaller models degrade disproportionately from quantization. Configurable via `EMBED_MODEL` and `EMBED_DIM`.
 
 ### Context Summarization
 
-When the total token count of a conversation exceeds `SUMMARIZE_THRESHOLD` (default 64k), older messages are automatically compressed via the LLM into a single summary message. The 4 most recent messages are always kept intact.
+When the total token count of a conversation exceeds `SUMMARIZE_THRESHOLD` (default 80k), older messages are automatically compressed via the LLM into a single summary message. The 4 most recent messages are always kept intact.
+
+## Testing
+
+```bash
+uv run python -m pytest tests/ -v
+```
+
+All tests use `httpx.MockTransport` and mocked RAG methods — no live server required.
 
 ## Security
 
 - MCP servers can expose file system access or execute commands. Do not expose port 8000 to untrusted networks.
-- The SQLite query tool restricts to `SELECT` / `PRAGMA` / `WITH` / `EXPLAIN` and opens the database in read-only mode.
 - The `.env` file is in `.gitignore`.

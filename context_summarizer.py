@@ -2,7 +2,7 @@
 Context Summarizer Module
 =========================
 Automatically summarizes older conversation turns when the
-running token count crosses the configured threshold (default 64k).
+running token count crosses the configured threshold (default 80k).
 
 This keeps long multi-turn conversations within the context
 window without simply truncating valuable earlier messages.

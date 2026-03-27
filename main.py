@@ -3,7 +3,6 @@ Orchestrator -- Main FastAPI Application
 =========================================
 Exposes endpoints:
   /chat       -- Agentic chat loop with MCP tools and RAG.
-  /telemetry  -- Ingest telemetry events (stored in SQLite).
   /context    -- Returns current context window usage stats.
   /health     -- Basic health check including backend connectivity.
 """
@@ -15,17 +14,15 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from config import (
     LLM_MODEL, LLM_PROVIDER, LLM_API_BASE, MAX_CONTEXT_TOKENS,
-    OLLAMA_HOST, SUMMARIZE_THRESHOLD, TELEMETRY_POLL_INTERVAL,
-    TELEMETRY_SOURCE_URL,
+    OLLAMA_HOST,
 )
 from llm_provider import get_provider
 from context_manager import context_manager
 from context_summarizer import context_summarizer
-from db_logger import init_db, log_query, log_telemetry
 from mcp_client import mcp_client
 from rag_service import rag_service
 
@@ -80,6 +77,10 @@ _llm = get_provider(
 _last_context_stats: dict = {}
 
 
+# ---------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------
+
 def _coerce_tool_arguments(raw_arguments: Any) -> dict:
     """Normalise tool arguments from Ollama into a JSON object."""
     if raw_arguments is None:
@@ -105,14 +106,6 @@ def _coerce_tool_arguments(raw_arguments: Any) -> dict:
     raise ValueError(
         f"Unsupported tool argument type: {type(raw_arguments).__name__}"
     )
-
-
-async def _safe_log_query(query: str, baseline_tokens: int) -> None:
-    """Run query logging in the background without surfacing task warnings."""
-    try:
-        await log_query(query, baseline_tokens)
-    except Exception as exc:
-        print(f"[DB] Failed to log query: {exc}")
 
 
 def _count_request_tokens(messages: list[dict], tool_schemas: list[dict]) -> int:
@@ -217,18 +210,6 @@ class ChatRequest(BaseModel):
     stream: bool = True
 
 
-class TelemetryEvent(BaseModel):
-    source: str = Field(..., description="Origin (e.g. 'suit_sensors', 'habitat_env')")
-    event_type: str = Field(..., description="Category (e.g. 'temperature_reading')")
-    severity: str = Field(default="info", description="debug | info | warning | critical")
-    payload: dict | None = Field(default=None, description="Arbitrary JSON data")
-    description: str = Field(default="", description="Human-readable summary of the event")
-
-
-class TelemetryBatch(BaseModel):
-    events: list[TelemetryEvent]
-
-
 # ---------------------------------------------------------------
 # Lifespan — startup / shutdown
 # ---------------------------------------------------------------
@@ -236,9 +217,6 @@ class TelemetryBatch(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ---- Startup ----
-    print("[STARTUP] Initialising database …")
-    await init_db()
-
     print("[STARTUP] Pre-loading tokenizer …")
     context_manager.load_tokenizer()
 
@@ -272,52 +250,10 @@ async def lifespan(app: FastAPI):
     print("[STARTUP] Connecting to MCP servers …")
     await mcp_client.connect_all()
 
-    # ---- Background telemetry poller ----
-    poller_task = None
-    if TELEMETRY_SOURCE_URL:
-        async def _telemetry_poller():
-            """Poll telemetry source every TELEMETRY_POLL_INTERVAL seconds."""
-            import httpx
-
-            print(
-                f"[POLLER] Telemetry poller started "
-                f"(every {TELEMETRY_POLL_INTERVAL}s from {TELEMETRY_SOURCE_URL})"
-            )
-            async with httpx.AsyncClient(timeout=10) as client:
-                while True:
-                    try:
-                        resp = await client.get(TELEMETRY_SOURCE_URL)
-                        resp.raise_for_status()
-                        data = resp.json()
-
-                        # Expect either a single event dict or a list of events
-                        events = data if isinstance(data, list) else [data]
-                        for evt in events:
-                            await log_telemetry(
-                                source=evt.get("source", "telemetry_api"),
-                                event_type=evt.get("event_type", "poll"),
-                                severity=evt.get("severity", "info"),
-                                payload=evt.get("payload"),
-                                description=evt.get("description", ""),
-                            )
-                        if events:
-                            print(f"[POLLER] Stored {len(events)} event(s)")
-
-                    except Exception as exc:
-                        print(f"[POLLER] Error: {exc}")
-
-                    await asyncio.sleep(TELEMETRY_POLL_INTERVAL)
-
-        poller_task = asyncio.create_task(_telemetry_poller())
-    else:
-        print("[STARTUP] No TELEMETRY_SOURCE_URL set — poller disabled")
-
     print("[STARTUP] Ready.")
     yield
 
     # ---- Shutdown ----
-    if poller_task:
-        poller_task.cancel()
     print("[SHUTDOWN] Closing MCP connections …")
     await mcp_client.shutdown()
 
@@ -380,10 +316,7 @@ async def chat(request: ChatRequest):
             ),
         )
 
-    # --- Log the query (fire-and-forget) ---
-    asyncio.create_task(_safe_log_query(user_query, baseline))
-
-    # --- RAG: retrieve context within budget ---
+    # --- RAG: retrieve relevant past conversation context ---
     rag_context, dynamic_budget = await rag_service.retrieve_context(
         query=user_query,
         budget_limit=dynamic_budget,
@@ -429,6 +362,9 @@ async def chat(request: ChatRequest):
 
     # --- Track tokens consumed by tool results ---
     tool_result_tokens = 0
+
+    # --- Track tool calls for RAG storage ---
+    tool_calls_log: list[dict] = []
 
     # --- Agentic tool loop ---
     assistant_msg = None
@@ -496,6 +432,13 @@ async def chat(request: ChatRequest):
                 # Execute via MCP
                 raw_result = await mcp_client.execute_tool(tool_name, tool_args)
 
+            # Log for RAG storage
+            tool_calls_log.append({
+                "name": tool_name,
+                "arguments": tool_args,
+                "result": raw_result,
+            })
+
             tool_message_template = {}
             if LLM_PROVIDER != "ollama":
                 tool_message_template["tool_call_id"] = call["id"]
@@ -532,7 +475,7 @@ async def chat(request: ChatRequest):
         ),
     }
 
-    # --- Return the response ---
+    # --- Build final response ---
     if completed_response and assistant_msg and assistant_msg.content:
         final_content = assistant_msg.content
     elif completed_response:
@@ -540,6 +483,17 @@ async def chat(request: ChatRequest):
     else:
         final_content = "Unable to complete the request within the tool-call limit."
 
+    # --- Store conversation turn into RAG (fire-and-forget) ---
+    if final_content:
+        asyncio.create_task(
+            rag_service.store_conversation_turn(
+                user_message=user_query,
+                assistant_reply=final_content,
+                tool_calls_log=tool_calls_log if tool_calls_log else None,
+            )
+        )
+
+    # --- Return the response ---
     if request.stream:
         async def generate():
             if final_content:
@@ -548,39 +502,6 @@ async def chat(request: ChatRequest):
         return StreamingResponse(generate(), media_type="text/plain")
     else:
         return {"role": "assistant", "content": final_content}
-
-
-# ---------------------------------------------------------------
-# /telemetry — ingest telemetry events
-# ---------------------------------------------------------------
-
-@app.post("/telemetry")
-async def ingest_telemetry(event: TelemetryEvent):
-    """Ingest a single telemetry event. Stored in SQLite only."""
-    row_id = await log_telemetry(
-        source=event.source,
-        event_type=event.event_type,
-        severity=event.severity,
-        payload=event.payload,
-        description=event.description,
-    )
-    return {"status": "ok", "id": row_id}
-
-
-@app.post("/telemetry/batch")
-async def ingest_telemetry_batch(batch: TelemetryBatch):
-    """Ingest multiple telemetry events at once. Stored in SQLite only."""
-    ids = []
-    for event in batch.events:
-        row_id = await log_telemetry(
-            source=event.source,
-            event_type=event.event_type,
-            severity=event.severity,
-            payload=event.payload,
-            description=event.description,
-        )
-        ids.append(row_id)
-    return {"status": "ok", "ids": ids, "count": len(ids)}
 
 
 # ---------------------------------------------------------------

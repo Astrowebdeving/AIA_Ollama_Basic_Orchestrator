@@ -208,6 +208,65 @@ class RagService:
             print(f"[RAG] Retrieval error: {e}")
             return "", budget_limit
 
+    # ----------------------------------------------------------------
+    # Conversation history storage
+    # ----------------------------------------------------------------
+
+    async def store_conversation_turn(
+        self,
+        user_message: str,
+        assistant_reply: str,
+        tool_calls_log: list[dict] | None = None,
+    ) -> None:
+        """
+        Store a completed conversation exchange into the knowledge base.
+
+        The full exchange (including tool calls and results) is serialized
+        into a text document and embedded for future semantic retrieval.
+        This enables the ``search_knowledge`` MCP tool to recall past
+        conversations with full context.
+
+        Parameters
+        ----------
+        user_message : str
+            The user's original message.
+        assistant_reply : str
+            The model's final textual response.
+        tool_calls_log : list[dict], optional
+            List of tool call records, each with keys:
+            ``name``, ``arguments`` (dict), ``result`` (str).
+        """
+        parts: list[str] = [f"User: {user_message}"]
+
+        if tool_calls_log:
+            for call in tool_calls_log:
+                name = call.get("name", "unknown_tool")
+                args = call.get("arguments", {})
+                result = call.get("result", "")
+                args_str = ", ".join(
+                    f"{k}={v}" for k, v in args.items()
+                ) if isinstance(args, dict) else str(args)
+                # Truncate very long tool results to keep chunks manageable
+                result_preview = result[:2000]
+                if len(result) > 2000:
+                    result_preview += "… [truncated]"
+                parts.append(f"Tool: {name}({args_str}) → {result_preview}")
+
+        parts.append(f"Assistant: {assistant_reply}")
+
+        document = "\n".join(parts)
+
+        try:
+            await self.add_document(
+                text=document,
+                metadata=json.dumps({
+                    "kind": "conversation_turn",
+                    "has_tool_calls": bool(tool_calls_log),
+                }, ensure_ascii=False, separators=(",", ":")),
+            )
+        except Exception as exc:
+            print(f"[RAG] Failed to store conversation turn: {exc}")
+
 
 # Global instance
 rag_service = RagService()

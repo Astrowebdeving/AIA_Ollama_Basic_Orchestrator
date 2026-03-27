@@ -1,11 +1,10 @@
 [project]
 name = "orchestrator"
 version = "0.1.0"
-description = "Local LLM orchestrator with MCP tools, RAG, and telemetry ingestion"
+description = "Local LLM orchestrator with MCP tools and RAG"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiosqlite>=0.22.1",
     "fastapi>=0.129.0",
     "httpx>=0.28.0",
     "lancedb>=0.29.2",
@@ -15,4 +14,10 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "transformers>=5.2.0",
     "uvicorn>=0.35.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
 ]
