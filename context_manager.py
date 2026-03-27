@@ -11,7 +11,7 @@ class ContextManager:
         
     def load_tokenizer(self):
         if not self.tokenizer:
-            # We use use_fast=True if available, but gemma tokenizer might need standard instantiation
+            # AutoTokenizer handles both fast and slow tokenizers for any model
             self.tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
 
     def count_message_tokens(

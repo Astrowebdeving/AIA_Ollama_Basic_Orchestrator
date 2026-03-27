@@ -90,9 +90,20 @@ _DEFAULT_MODELS = {
 LLM_MODEL = os.getenv("LLM_MODEL", _DEFAULT_MODELS.get(LLM_PROVIDER, "gemma3:27b-it-qat"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "qwen3-embedding:0.6b")
 EMBED_DIM = int(os.getenv("EMBED_DIM", 1024))
-TOKENIZER_NAME = os.getenv("TOKENIZER_NAME", "google/gemma-3-27b-it")
 
-# Token Budgeting (Gemma 3 27b supports 128k context)
+# Tokenizer — must match the active chat model for accurate token counting.
+# Auto-selected based on provider if not explicitly set.
+_DEFAULT_TOKENIZERS = {
+    "ollama": "google/gemma-3-27b-it",
+    "afm": "Qwen/Qwen3-35B-A3B",
+    "llamacpp": "google/gemma-3-27b-it",
+}
+TOKENIZER_NAME = os.getenv(
+    "TOKENIZER_NAME",
+    _DEFAULT_TOKENIZERS.get(LLM_PROVIDER, "google/gemma-3-27b-it"),
+)
+
+# Token Budgeting (model context window — both Gemma 3 27B and Qwen 3.5 support 128k)
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", 128000))
 SUMMARIZE_THRESHOLD = int(os.getenv("SUMMARIZE_THRESHOLD", 80000))
 

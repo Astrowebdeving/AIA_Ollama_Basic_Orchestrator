@@ -1,6 +1,6 @@
-# Gemma 3 Orchestrator
+# LLM Orchestrator
 
-Local LLM orchestrator built with FastAPI. Connects Ollama-hosted models (default: `gemma3:27b-it-qat`) with MCP tool servers and vector-backed RAG for conversation history. The LLM decides when to call tools — no auto-injection, no background polling.
+Local LLM orchestrator built with FastAPI. Supports multiple model backends (Gemma 3, Qwen 3.5, and others via Ollama, AFM/MLX, or llama.cpp). Provides MCP tool servers and vector-backed RAG for conversation history. The LLM decides when to call tools — no auto-injection, no background polling.
 
 ## Quick Start
 
@@ -12,7 +12,10 @@ uv sync
 ollama pull qwen3-embedding:0.6b
 
 # Pull a chat model (if using Ollama as the chat backend)
+# For Gemma 3:
 ollama pull gemma3:27b-it-qat
+# Or for Qwen 3.5 (when migrating):
+# ollama pull qwen3.5:35b-a3b
 
 # Run (defaults to Ollama backend)
 uv run python main.py
@@ -57,6 +60,11 @@ OLLAMA_IP=10.207.22.21
 EMBED_MODEL=qwen3-embedding:0.6b
 EMBED_DIM=1024
 
+# Tokenizer — auto-selected per provider if not set.
+# Must match the chat model for accurate token counting.
+# TOKENIZER_NAME=google/gemma-3-27b-it    # for Gemma 3
+# TOKENIZER_NAME=Qwen/Qwen3-35B-A3B       # for Qwen 3.5
+
 # Context management
 MAX_CONTEXT_TOKENS=128000
 SUMMARIZE_THRESHOLD=80000
@@ -68,17 +76,19 @@ TSS_API_TIMEOUT=10
 
 ### Provider Defaults
 
-| Provider | Default API base | Default model | Notes |
-|----------|-----------------|---------------|-------|
-| `ollama` | `http://{auto-detected-ip}:11434` | `gemma3:27b-it-qat` | Full Ollama SDK |
-| `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | OpenAI-compatible (AFM/MLX) |
-| `llamacpp` | `http://localhost:8080` | `gemma3` | OpenAI-compatible (llama-server) |
+| Provider | Default API base | Default model | Default tokenizer | Notes |
+|----------|-----------------|---------------|-------------------|-------|
+| `ollama` | `http://{auto-detected-ip}:11434` | `gemma3:27b-it-qat` | `google/gemma-3-27b-it` | Full Ollama SDK |
+| `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | `Qwen/Qwen3-35B-A3B` | OpenAI-compatible (AFM/MLX) |
+| `llamacpp` | `http://localhost:8080` | `gemma3` | `google/gemma-3-27b-it` | OpenAI-compatible (llama-server) |
+
+The tokenizer is auto-selected based on `LLM_PROVIDER` when `TOKENIZER_NAME` is not set. Override it if you're running a non-default model on any provider.
 
 The Ollama host resolution order is: preferred local `OLLAMA_HOST` (defaults to `http://127.0.0.1:11434`), then fallback `OLLAMA_IP` / `OLLAMA_FALLBACK_HOST`, then the first configured value if neither is reachable. Ollama is always required for embeddings regardless of the chat provider.
 
 ### Switching Providers
 
-To use AFM/MLX (start the AFM server separately):
+To use AFM/MLX with Qwen 3.5 (start the AFM server separately):
 ```bash
 afm mlx -m mlx-community/Qwen3.5-35B-A3B-4bit -w --vlm \
   --tool-call-parser qwen3_xml --max-kv-size 32768 --kv-bits 4 \
@@ -94,6 +104,24 @@ llama-server -m model.gguf --jinja --port 8080
 
 LLM_PROVIDER=llamacpp uv run python main.py
 ```
+
+### Migrating to Qwen 3.5
+
+To switch from Gemma 3 to Qwen 3.5, just change environment variables — no code changes needed:
+
+**Via Ollama:**
+```bash
+ollama pull qwen3.5:35b-a3b
+LLM_PROVIDER=ollama LLM_MODEL=qwen3.5:35b-a3b TOKENIZER_NAME=Qwen/Qwen3-35B-A3B uv run python main.py
+```
+
+**Via AFM/MLX:**
+```bash
+LLM_PROVIDER=afm uv run python main.py
+# AFM defaults already point to Qwen 3.5
+```
+
+The tokenizer auto-selects when you set `LLM_PROVIDER=afm`. Set `OLLAMA_MAX_LOADED_MODELS=2` if running both chat and embeddings on Ollama to avoid model-swapping overhead.
 
 ## Architecture
 

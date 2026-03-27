@@ -259,7 +259,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Gemma Orchestrator",
+    title="LLM Orchestrator",
     description="Local LLM orchestrator with MCP tools & RAG",
     lifespan=lifespan,
 )
