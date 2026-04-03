@@ -110,9 +110,8 @@ SUMMARIZE_THRESHOLD = int(os.getenv("SUMMARIZE_THRESHOLD", 80000))
 # LanceDB
 LANCEDB_URI = os.getenv("LANCEDB_URI", "./lancedb")
 
-# TSS UDP — used by the MCP tool server for on-demand telemetry fetches.
-# The TSS2026 server binds to the host machine's LAN IP on port 14141.
-# Set TSS_UDP_HOST to the IP printed by the server at launch.
+# TSS UDP — connects to the external NASA SUITS TSS2026 server for live telemetry.
+# Set TSS_UDP_HOST to the IP of the running TSS instance (provided at test week or local dev).
 TSS_UDP_HOST = os.getenv("TSS_UDP_HOST", _detect_local_ip())
 TSS_UDP_PORT = int(os.getenv("TSS_UDP_PORT", 14141))
 TSS_UDP_TIMEOUT = float(os.getenv("TSS_UDP_TIMEOUT", 2.0))

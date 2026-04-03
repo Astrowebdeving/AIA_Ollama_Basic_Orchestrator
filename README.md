@@ -12,11 +12,10 @@ uv sync
 ollama pull gemma4:26b           # Chat model (Q4_K_M, ~17GB)
 ollama pull qwen3-embedding:0.6b # Embedding model (always needed for RAG)
 
-# Start the TSS2026 server (in a separate terminal)
-cd ../TSS2026
-./build.bat
-./server.exe
-# Note the IP printed: "Launching Server at IP: x.x.x.x:14141"
+# Configure TSS server connection (set to the IP/port of the running TSS instance)
+# Edit .env:
+#   TSS_UDP_HOST=<TSS server IP>
+#   TSS_UDP_PORT=14141
 
 # Run the orchestrator (defaults to Ollama + Gemma 4)
 uv run python main.py
@@ -116,7 +115,9 @@ The LLM decides when to call these tools based on the user's prompt. There is no
 
 ### TSS2026 Integration
 
-The `get_tss_state` MCP tool communicates directly with the NASA SUITS TSS2026 server over **UDP** (port 14141). The TSS server uses a binary protocol: clients send an 8-byte big-endian packet (`[uint32 timestamp][uint32 command]`) and receive JSON telemetry in response.
+The `get_tss_state` MCP tool communicates directly with the NASA SUITS TSS2026 server over **UDP** (port 14141). The TSS server is an external dependency managed by NASA — the orchestrator only needs its IP address and port to connect.
+
+The TSS protocol uses big-endian binary packets: clients send an 8-byte request (`[uint32 timestamp][uint32 command]`) and receive JSON telemetry in response.
 
 **UDP Command Map:**
 
@@ -129,21 +130,14 @@ The `get_tss_state` MCP tool communicates directly with the NASA SUITS TSS2026 s
 | — | `vitals` | Filtered EVA data: heart rate, O₂, CO₂, temperature, battery only |
 | — | `all` | Commands 0–3 combined |
 
-**Setup:**
-```bash
-# 1. Start the TSS2026 server (builds from C source)
-cd TSS2026
-./build.bat
-./server.exe
-# Server prints: "Launching Server at IP: x.x.x.x:14141"
-# Set TSS_UDP_HOST to this IP in your .env
+**Connecting to TSS:**
 
-# 2. Verify connectivity
-cd ../orchestrator
+Set `TSS_UDP_HOST` and `TSS_UDP_PORT` in your `.env` to match the running TSS instance. During local development you can run a local copy of TSS2026 for testing; at JSC test week, point to the official NASA-hosted instance.
+
+```bash
+# Verify connectivity to the TSS server
 uv run python test_tss_udp.py
 ```
-
-The TSS2026 server binds to your machine's LAN IP (not `127.0.0.1`). Set `TSS_UDP_HOST` in `.env` to match the IP printed at server launch.
 
 ### Data Flow
 
