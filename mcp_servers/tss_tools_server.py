@@ -3,7 +3,7 @@
 MCP Server — TSS Tools & Knowledge Search
 ==========================================
 Provides the LLM with two tools:
-  - get_tss_state: on-demand fetch of live TSS telemetry data
+  - get_tss_state: on-demand fetch of live TSS telemetry via UDP
   - search_knowledge: semantic search over conversation history (LanceDB)
 
 The orchestrator connects to this server via STDIO transport.
@@ -15,30 +15,35 @@ from pathlib import Path
 # Add parent dir to path so we can import project modules
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import TSS_API_BASE_URL, TSS_API_TIMEOUT
+from config import TSS_UDP_HOST, TSS_UDP_PORT, TSS_UDP_TIMEOUT
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from api_client import ApiClient, ApiClientError
+from tss_udp_client import TssUdpClient, TssUdpError
 
 # ---------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------
 
-_TSS_BASE_URL = TSS_API_BASE_URL.rstrip("/")
-_TSS_TIMEOUT = TSS_API_TIMEOUT
+_udp_client = TssUdpClient(
+    host=TSS_UDP_HOST,
+    port=TSS_UDP_PORT,
+    timeout=TSS_UDP_TIMEOUT,
+)
 
-# Scopes and their endpoint mappings
-_SCOPE_ENDPOINTS: dict[str, list[str]] = {
-    "all": ["/health", "/eva", "/ltv", "/vitals"],
-    "eva": ["/eva"],
-    "ltv": ["/ltv"],
-    "health": ["/health"],
-    "vitals": ["/health", "/vitals"],
+# Scopes map to one or more UDP command numbers.
+# Command 0=ROVER, 1=EVA, 2=LTV, 3=LTV_ERRORS
+_SCOPE_COMMANDS: dict[str, list[tuple[str, int]]] = {
+    "all":    [("rover", 0), ("eva", 1), ("ltv", 2), ("ltv_errors", 3)],
+    "rover":  [("rover", 0)],
+    "eva":    [("eva", 1)],
+    "ltv":    [("ltv", 2)],
+    "ltv_errors": [("ltv_errors", 3)],
+    "vitals": [("eva", 1)],  # fetches EVA, post-filtered to vitals only
 }
 
-_VALID_SCOPES = set(_SCOPE_ENDPOINTS.keys())
+_VALID_SCOPES = set(_SCOPE_COMMANDS.keys())
 
 # ---------------------------------------------------------------
 # MCP Server
@@ -75,16 +80,40 @@ def _format_tss_response(results: dict[str, dict | None]) -> str:
     """Format fetched TSS data into a human-readable text block."""
     sections: list[str] = []
 
-    for endpoint, data in results.items():
+    for label, data in results.items():
         if data is None:
-            sections.append(f"## {endpoint}\nNot available (endpoint returned error or 404)")
+            sections.append(f"## {label}\nNot available (request failed or timed out)")
             continue
 
         lines: list[str] = []
         _flatten("", data, lines)
-        sections.append(f"## {endpoint}\n" + "\n".join(lines))
+        sections.append(f"## {label}\n" + "\n".join(lines))
 
     return "\n\n".join(sections)
+
+
+_VITALS_KEYS = {
+    "heart_rate", "oxy_consumption", "co2_production", "temperature",
+    "suit_pressure_oxy", "suit_pressure_co2", "suit_pressure_other",
+    "suit_pressure_total", "helmet_pressure_co2",
+    "primary_battery_level", "secondary_battery_level", "battery_level",
+    "oxy_pri_storage", "oxy_sec_storage",
+    "coolant_storage", "coolant_liquid_pressure",
+    "fan_pri_rpm", "fan_sec_rpm",
+    "eva_elapsed_time",
+}
+
+
+def _extract_vitals(eva_data: dict) -> dict:
+    """Filter full EVA JSON down to vitals-only fields per crew member."""
+    telemetry = eva_data.get("telemetry", {})
+    result = {}
+    for eva_id, readings in telemetry.items():
+        if isinstance(readings, dict):
+            result[eva_id] = {
+                k: v for k, v in readings.items() if k in _VITALS_KEYS
+            }
+    return {"vitals": result}
 
 
 # ---------------------------------------------------------------
@@ -97,24 +126,26 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="get_tss_state",
             description=(
-                "Fetch live telemetry data from the TSS Unity API. "
+                "Fetch live telemetry data from the TSS2026 server via UDP. "
                 "Use this when the user asks about EVA status, LTV location, "
-                "crew vitals, suit telemetry, or any real-time mission data. "
-                "The 'scope' parameter controls which endpoints are queried."
+                "rover telemetry, crew vitals, suit telemetry, or any real-time "
+                "mission data. The 'scope' parameter controls which data sets "
+                "are queried."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "scope": {
                         "type": "string",
-                        "enum": ["all", "eva", "ltv", "health", "vitals"],
+                        "enum": list(_VALID_SCOPES),
                         "description": (
                             "What data to fetch. "
-                            "'all' returns health + EVA + LTV + vitals. "
-                            "'eva' returns EVA telemetry only. "
+                            "'all' returns rover + EVA + LTV + LTV errors. "
+                            "'rover' returns pressurized rover telemetry only. "
+                            "'eva' returns EVA suit telemetry, DCU, UIA, IMU. "
+                            "'vitals' returns crew vitals only (heart rate, O2, CO2, temp, battery). "
                             "'ltv' returns LTV location/signal only. "
-                            "'health' returns server health only. "
-                            "'vitals' returns crew vitals + health."
+                            "'ltv_errors' returns LTV error states only."
                         ),
                     },
                 },
@@ -168,7 +199,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 # ---------------------------------------------------------------
 
 async def _handle_get_tss_state(arguments: dict) -> list[TextContent]:
-    """Fetch live TSS data with scoped endpoint selection."""
+    """Fetch live TSS data on-demand via UDP."""
     scope = (arguments.get("scope") or "all").strip().lower()
     if scope not in _VALID_SCOPES:
         return [TextContent(
@@ -176,48 +207,25 @@ async def _handle_get_tss_state(arguments: dict) -> list[TextContent]:
             text=f"Invalid scope '{scope}'. Valid: {', '.join(sorted(_VALID_SCOPES))}",
         )]
 
-    if not _TSS_BASE_URL:
-        return [TextContent(
-            type="text",
-            text=(
-                "Error: TSS_API_BASE_URL is not configured. "
-                "Set it in .env or environment variables."
-            ),
-        )]
-
-    endpoints = _SCOPE_ENDPOINTS[scope]
+    commands = _SCOPE_COMMANDS[scope]
     results: dict[str, dict | None] = {}
 
-    try:
-        async with ApiClient(
-            base_url=_TSS_BASE_URL,
-            timeout=_TSS_TIMEOUT,
-        ) as client:
-            for endpoint in endpoints:
-                try:
-                    data = await client.fetch_json(endpoint)
-                    results[endpoint] = data
-                except ApiClientError as exc:
-                    # Graceful handling — endpoint may not exist (e.g. /vitals on older servers)
-                    error_msg = str(exc)
-                    if "404" in error_msg:
-                        results[endpoint] = None
-                    else:
-                        results[endpoint] = None
-                        print(f"[TSS] Error fetching {endpoint}: {exc}")
-                except Exception as exc:
-                    results[endpoint] = None
-                    print(f"[TSS] Unexpected error fetching {endpoint}: {exc}")
+    for label, cmd_number in commands:
+        try:
+            data = await _udp_client.request_json(cmd_number)
+            if scope == "vitals":
+                data = _extract_vitals(data)
+            results[label] = data
+        except TssUdpError as exc:
+            results[label] = None
+            print(f"[TSS] UDP error fetching {label} (cmd={cmd_number}): {exc}")
+        except Exception as exc:
+            results[label] = None
+            print(f"[TSS] Unexpected error fetching {label}: {exc}")
 
-        formatted = _format_tss_response(results)
-        header = f"TSS State (scope={scope}, source={_TSS_BASE_URL})"
-        return [TextContent(type="text", text=f"{header}\n\n{formatted}")]
-
-    except Exception as exc:
-        return [TextContent(
-            type="text",
-            text=f"Failed to connect to TSS server at {_TSS_BASE_URL}: {exc}",
-        )]
+    formatted = _format_tss_response(results)
+    header = f"TSS State (scope={scope}, source={_udp_client.host}:{_udp_client.port})"
+    return [TextContent(type="text", text=f"{header}\n\n{formatted}")]
 
 
 async def _handle_search_knowledge(arguments: dict) -> list[TextContent]:

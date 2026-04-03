@@ -83,24 +83,24 @@ LLM_API_BASE = os.getenv("LLM_API_BASE", "")  # auto-set per provider if empty
 
 # Model Settings (defaults vary by provider)
 _DEFAULT_MODELS = {
-    "ollama": "gemma3:27b-it-qat",
+    "ollama": "gemma4:26b",
     "afm": "mlx-community/Qwen3.5-35B-A3B-4bit",
-    "llamacpp": "gemma3",
+    "llamacpp": "gemma4",
 }
-LLM_MODEL = os.getenv("LLM_MODEL", _DEFAULT_MODELS.get(LLM_PROVIDER, "gemma3:27b-it-qat"))
+LLM_MODEL = os.getenv("LLM_MODEL", _DEFAULT_MODELS.get(LLM_PROVIDER, "gemma4:26b"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "qwen3-embedding:0.6b")
 EMBED_DIM = int(os.getenv("EMBED_DIM", 1024))
 
 # Tokenizer — must match the active chat model for accurate token counting.
 # Auto-selected based on provider if not explicitly set.
 _DEFAULT_TOKENIZERS = {
-    "ollama": "google/gemma-3-27b-it",
+    "ollama": "google/gemma-4-26B-A4B-it",
     "afm": "Qwen/Qwen3-35B-A3B",
-    "llamacpp": "google/gemma-3-27b-it",
+    "llamacpp": "google/gemma-4-26B-A4B-it",
 }
 TOKENIZER_NAME = os.getenv(
     "TOKENIZER_NAME",
-    _DEFAULT_TOKENIZERS.get(LLM_PROVIDER, "google/gemma-3-27b-it"),
+    _DEFAULT_TOKENIZERS.get(LLM_PROVIDER, "google/gemma-4-26B-A4B-it"),
 )
 
 # Token Budgeting (model context window — both Gemma 3 27B and Qwen 3.5 support 128k)
@@ -110,9 +110,16 @@ SUMMARIZE_THRESHOLD = int(os.getenv("SUMMARIZE_THRESHOLD", 80000))
 # LanceDB
 LANCEDB_URI = os.getenv("LANCEDB_URI", "./lancedb")
 
-# TSS Unity API — used by the MCP tool server for on-demand fetches
-TSS_API_BASE_URL = os.getenv("TSS_API_BASE_URL", "http://127.0.0.1:8100/api/v1")
-TSS_API_TIMEOUT = float(os.getenv("TSS_API_TIMEOUT", 10.0))
+# TSS UDP — used by the MCP tool server for on-demand telemetry fetches.
+# The TSS2026 server binds to the host machine's LAN IP on port 14141.
+# Set TSS_UDP_HOST to the IP printed by the server at launch.
+TSS_UDP_HOST = os.getenv("TSS_UDP_HOST", _detect_local_ip())
+TSS_UDP_PORT = int(os.getenv("TSS_UDP_PORT", 14141))
+TSS_UDP_TIMEOUT = float(os.getenv("TSS_UDP_TIMEOUT", 2.0))
+
+# Legacy HTTP config (deprecated — TSS2026 uses UDP exclusively)
+# TSS_API_BASE_URL = os.getenv("TSS_API_BASE_URL", "http://127.0.0.1:8100/api/v1")
+# TSS_API_TIMEOUT = float(os.getenv("TSS_API_TIMEOUT", 10.0))
 
 # MCP Servers configurations
 # Each entry spawns a child process the orchestrator communicates with via STDIO.

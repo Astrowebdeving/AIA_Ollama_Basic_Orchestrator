@@ -39,6 +39,7 @@ class ChatResponse:
     """Provider-agnostic chat completion response."""
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
+    thinking: str | None = None  # reasoning trace (not streamed to user)
 
 
 # ---------------------------------------------------------------
@@ -86,6 +87,7 @@ class OllamaProvider(LLMProvider):
             "model": model,
             "messages": messages,
             "stream": False,
+            "think": True,  # Gemma 4 reasoning — SDK separates thinking/content
         }
         if tools:
             kwargs["tools"] = tools
@@ -107,6 +109,11 @@ class OllamaProvider(LLMProvider):
 
         msg = response.message
 
+        # Extract thinking trace (never streamed to user)
+        thinking = getattr(msg, "thinking", None) or None
+        if thinking:
+            print(f"[THINKING] {len(thinking)} chars of reasoning trace")
+
         # Normalize tool calls
         tool_calls = None
         if getattr(msg, "tool_calls", None):
@@ -122,7 +129,11 @@ class OllamaProvider(LLMProvider):
                 for tc in msg.tool_calls
             ]
 
-        return ChatResponse(content=msg.content, tool_calls=tool_calls)
+        return ChatResponse(
+            content=msg.content,
+            tool_calls=tool_calls,
+            thinking=thinking,
+        )
 
     async def list_models(self) -> list[str]:
         result = await asyncio.to_thread(self._client.list)
