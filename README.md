@@ -61,8 +61,8 @@ LLM_PROVIDER=ollama
 LLM_MODEL=gemma4:26b
 LLM_API_BASE=              # auto-set per provider if empty
 
-# Ollama host -- use localhost (note: if OLLAMA_HOST=0.0.0.0 is set system-wide for
-# Ollama's own bind address, the orchestrator automatically remaps it to localhost)
+# Ollama host -- always localhost. If OLLAMA_HOST is set system-wide to 0.0.0.0
+# (Ollama's server bind address), the orchestrator automatically remaps it to localhost.
 OLLAMA_HOST=http://localhost:11434
 
 # Tokenizer -- auto-selected per provider if not set
@@ -83,7 +83,7 @@ TSS_UDP_TIMEOUT=2.0
 
 | Provider | Default API base | Default model | Default tokenizer | Notes |
 |----------|-----------------|---------------|-------------------|-------|
-| `ollama` | `http://{auto-detected-ip}:11434` | `gemma4:26b` | `google/gemma-4-26B-A4B-it` | Full Ollama SDK, native thinking + tools |
+| `ollama` | `http://localhost:11434` | `gemma4:26b` | `google/gemma-4-26B-A4B-it` | Full Ollama SDK, native thinking + tools |
 | `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | `Qwen/Qwen3-35B-A3B` | OpenAI-compatible (AFM/MLX) |
 | `llamacpp` | `http://localhost:8080` | `gemma4` | `google/gemma-4-26B-A4B-it` | OpenAI-compatible (llama-server) |
 
