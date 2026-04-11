@@ -1,6 +1,6 @@
 # LLM Orchestrator
 
-Local LLM orchestrator built with FastAPI, powered by **Gemma 4 26B** (MoE, 4B active params) via Ollama. Features native tool calling, built-in reasoning (thinking), MCP tool servers for live NASA SUITS TSS2026 telemetry over UDP, and vector-backed RAG for conversation history.
+Local LLM orchestrator built with FastAPI, powered by Gemma 4 26B (MoE, 4B active params, Q4\_K\_M) via Ollama. Features native tool calling, built-in reasoning, and MCP tool servers for live NASA SUITS TSS2026 telemetry over UDP, reference document search (text + PDF), and image analysis.
 
 ## Quick Start
 
@@ -9,40 +9,47 @@ Local LLM orchestrator built with FastAPI, powered by **Gemma 4 26B** (MoE, 4B a
 uv sync
 
 # Pull required Ollama models
-ollama pull gemma4:26b           # Chat model (Q4_K_M, ~17GB)
-ollama pull qwen3-embedding:0.6b # Embedding model (always needed for RAG)
+ollama pull gemma4:26b           # Chat model (~17GB)
+ollama pull qwen3-embedding:0.6b # Embedding model (needed if RAG is re-enabled)
 
 # Configure TSS server connection (set to the IP/port of the running TSS instance)
 # Edit .env:
 #   TSS_UDP_HOST=<TSS server IP>
 #   TSS_UDP_PORT=14141
 
-# Run the orchestrator (defaults to Ollama + Gemma 4)
+# Run the orchestrator
 uv run python main.py
 ```
 
-The orchestrator starts on `http://0.0.0.0:8000`.
+The orchestrator starts on `http://0.0.0.0:13853`.
 
 ## Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/chat` | Agentic chat with MCP tool calling, reasoning, and RAG context |
+| POST | `/chat` | Agentic chat with MCP tool calling and reasoning |
 | GET | `/context` | Token usage breakdown from the last `/chat` call |
 | GET | `/health` | LLM backend connectivity, model availability, MCP tool count |
 
 ### POST /chat
 
 ```json
+// Request
 {
   "messages": [
     {"role": "user", "content": "What is the EVA1 oxygen status?"}
   ],
-  "stream": true
+  "stream": false
+}
+
+// Response
+{
+  "role": "assistant",
+  "content": "EVA1: O2 94%, CO2 0.5%, HR 72 bpm, suit pressure nominal."
 }
 ```
 
-The model uses Gemma 4's native thinking to reason through the request, then autonomously calls MCP tools (e.g., fetching live TSS telemetry via UDP). The thinking trace is logged server-side but never streamed to the client. Tool results are fed back into the conversation and the model generates a final answer.
+The model uses Gemma 4's native thinking to reason through the request, then autonomously calls MCP tools (e.g., fetching live TSS telemetry via UDP, searching reference documents). The thinking trace is logged server-side but never streamed to the client.
 
 ## Configuration
 
@@ -54,22 +61,19 @@ LLM_PROVIDER=ollama
 LLM_MODEL=gemma4:26b
 LLM_API_BASE=              # auto-set per provider if empty
 
-# Ollama (always needed for embeddings, also for chat when LLM_PROVIDER=ollama)
-OLLAMA_HOST=http://127.0.0.1:11434
-OLLAMA_IP=10.207.22.21
-EMBED_MODEL=qwen3-embedding:0.6b
-EMBED_DIM=1024
+# Ollama host -- use localhost (note: if OLLAMA_HOST=0.0.0.0 is set system-wide for
+# Ollama's own bind address, the orchestrator automatically remaps it to localhost)
+OLLAMA_HOST=http://localhost:11434
 
-# Tokenizer — auto-selected per provider if not set.
-# Must match the chat model for accurate token counting.
-# TOKENIZER_NAME=google/gemma-4-26B-A4B-it    # for Gemma 4
+# Tokenizer -- auto-selected per provider if not set
+# TOKENIZER_NAME=google/gemma-4-26B-A4B-it
 
 # Context management
 MAX_CONTEXT_TOKENS=128000
 SUMMARIZE_THRESHOLD=80000
 
-# TSS2026 server (UDP telemetry — used by the get_tss_state MCP tool)
-# Set TSS_UDP_HOST to the IP printed by the TSS server at launch.
+# TSS2026 server (UDP telemetry -- used by the get_tss_state MCP tool)
+# Set TSS_UDP_HOST to the IP of the running TSS instance.
 TSS_UDP_HOST=10.206.64.189
 TSS_UDP_PORT=14141
 TSS_UDP_TIMEOUT=2.0
@@ -83,10 +87,6 @@ TSS_UDP_TIMEOUT=2.0
 | `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | `Qwen/Qwen3-35B-A3B` | OpenAI-compatible (AFM/MLX) |
 | `llamacpp` | `http://localhost:8080` | `gemma4` | `google/gemma-4-26B-A4B-it` | OpenAI-compatible (llama-server) |
 
-The tokenizer is auto-selected based on `LLM_PROVIDER` when `TOKENIZER_NAME` is not set. Override it if you're running a non-default model on any provider.
-
-The Ollama host resolution order is: preferred local `OLLAMA_HOST` (defaults to `http://127.0.0.1:11434`), then fallback `OLLAMA_IP` / `OLLAMA_FALLBACK_HOST`, then the first configured value if neither is reachable. Ollama is always required for embeddings regardless of the chat provider.
-
 ## Architecture
 
 ```
@@ -96,30 +96,37 @@ orchestrator/
   llm_provider.py          Provider abstraction: Ollama, AFM/MLX, llama.cpp
   tss_udp_client.py        Async UDP client for TSS2026 telemetry
   mcp_client.py            MCP server lifecycle, tool discovery, tool execution
-  rag_service.py           Conversation history: chunk, embed, retrieve (LanceDB)
   context_manager.py       Token counting, budget calculation, truncation
   context_summarizer.py    Auto-summarizes when conversation exceeds 80k tokens
+  docs/                    Reference documents searchable by the LLM (text, PDF, images)
   mcp_servers/
-    tss_tools_server.py    MCP server: get_tss_state (UDP), search_knowledge
+    tss_tools_server.py    MCP server: get_tss_state, search_docs, read_doc, inspect_image
+  rag_service.py           Conversation history via LanceDB (disabled, preserved for later)
   test_tss_udp.py          Smoke test for UDP connectivity to TSS2026
 ```
 
-### MCP Tools Available to the LLM
+### Active MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `get_tss_state` | Fetch live TSS2026 telemetry on-demand via UDP. Accepts `scope`: `all`, `eva`, `rover`, `ltv`, `ltv_errors`, `vitals`. |
-| `search_knowledge` | Semantic search over past conversations and tool results stored in the RAG knowledge base. |
+| Tool | Description | Max Output |
+|------|-------------|------------|
+| `get_tss_state` | Fetch live TSS2026 telemetry via UDP. Scopes: `all`, `eva`, `rover`, `ltv`, `ltv_errors`, `vitals`. | 4K chars |
+| `search_docs` | Grep docs/ for a text pattern. Searches text files and PDFs. Returns file:line:match, no surrounding context. | 50 matches |
+| `read_doc` | Read a document or section. Use after search_docs to expand context around a specific line. | 2K default, 8K max |
+| `inspect_image` | Analyze an image from docs/ using Gemma 4 vision. Maps, diagrams, equipment photos. | 8K chars |
 
-The LLM decides when to call these tools based on the user's prompt. There is no auto-injection of TSS state and no background polling — data is fetched on-demand for maximum freshness.
+The LLM decides when to call these tools based on the user's prompt. There is no auto-injection and no background polling.
+
+### Disabled Tools (preserved for later)
+
+| Tool | Description | How to re-enable |
+|------|-------------|------------------|
+| `search_knowledge` | Semantic search over past conversations via LanceDB embeddings | Uncomment in `tss_tools_server.py` and `main.py` |
 
 ### TSS2026 Integration
 
-The `get_tss_state` MCP tool communicates directly with the NASA SUITS TSS2026 server over **UDP** (port 14141). The TSS server is an external dependency managed by NASA — the orchestrator only needs its IP address and port to connect.
+The `get_tss_state` MCP tool communicates directly with the NASA SUITS TSS2026 server over UDP (port 14141). The TSS server is an external dependency managed by NASA -- the orchestrator only needs its IP address and port to connect.
 
 The TSS protocol uses big-endian binary packets: clients send an 8-byte request (`[uint32 timestamp][uint32 command]`) and receive JSON telemetry in response.
-
-**UDP Command Map:**
 
 | Command | Scope | Data Returned |
 |---------|-------|---------------|
@@ -127,46 +134,44 @@ The TSS protocol uses big-endian binary packets: clients send an 8-byte request 
 | 1 | `eva` | EVA1/EVA2 suit telemetry, DCU, UIA, IMU, errors |
 | 2 | `ltv` | LTV last-known location, signal strength |
 | 3 | `ltv_errors` | LTV error procedures |
-| — | `vitals` | Filtered EVA data: heart rate, O₂, CO₂, temperature, battery only |
-| — | `all` | Commands 0–3 combined |
+| -- | `vitals` | Filtered EVA data: heart rate, O2, CO2, temperature, battery only |
+| -- | `all` | Commands 0-3 combined |
 
-**Connecting to TSS:**
-
-Set `TSS_UDP_HOST` and `TSS_UDP_PORT` in your `.env` to match the running TSS instance. During local development you can run a local copy of TSS2026 for testing; at JSC test week, point to the official NASA-hosted instance.
+Set `TSS_UDP_HOST` and `TSS_UDP_PORT` in `.env` to match the running TSS instance. During local development you can run a local copy of TSS2026 for testing; at JSC test week, point to the official NASA-hosted instance.
 
 ```bash
-# Verify connectivity to the TSS server
+# Verify connectivity
 uv run python test_tss_udp.py
 ```
+
+### Document Search
+
+Place reference documents in `docs/` (supports subdirectories). The LLM searches them via a two-step workflow:
+
+1. `search_docs("egress procedure")` -- finds matches with file:line references
+2. `read_doc("procedures/ev-team-procedure-timeline.pdf", around_line=42)` -- reads context around that match
+
+Supported formats: Markdown, plain text, PDF (via PyMuPDF). Images can be analyzed via `inspect_image`.
+
+Note: `docs/` is in `.gitignore` — populate it locally with your mission documents. It is not committed to the repository.
 
 ### Data Flow
 
 ```
-User → POST /chat
-  ↓
-1. Retrieve relevant past conversations from RAG (LanceDB)
-2. Build message list: [system_prompt] + [RAG context] + [user messages]
-3. If total tokens > 80k → summarize older conversation history
-4. Send to Gemma 4 (with think=True)
-5. Model reasons internally (thinking trace logged, not streamed)
-6. Model decides: answer directly OR call tools
-   ├── get_tss_state(scope=eva) → UDP to TSS2026 → returns live JSON
-   └── search_knowledge("EVA oxygen") → queries LanceDB → returns past context
-7. Tool results fed back → model generates final answer
-8. Store full exchange (user + tools + assistant) into RAG
-9. Return response (content only, no thinking trace)
+User -> POST /chat
+  |
+1. Build message list: [system_prompt] + [user messages]
+2. If total tokens > 80k -> summarize older conversation history
+3. Send to Gemma 4 (with think=True)
+4. Model reasons internally (thinking trace logged, not streamed)
+5. Model decides: answer directly OR call tools
+   |-- get_tss_state(scope=eva) -> UDP to TSS2026 -> live JSON
+   |-- search_docs("oxygen") -> grep over docs/ -> file:line matches
+   |-- read_doc("procedures.pdf", around_line=42) -> context excerpt
+   |-- inspect_image("maps/dust-map.png") -> Gemma 4 vision analysis
+6. Tool results fed back -> model generates final answer
+7. Return response (content only, no thinking trace)
 ```
-
-### Dual Storage Strategy
-
-| What | Where | Used By |
-|------|-------|---------:|
-| **Full exchange** (user + tool calls + results + assistant) | RAG (LanceDB) | `search_knowledge` tool — rich retrieval |
-| **Compact context** (user + assistant only) | Injected into prompt | Auto-retrieved from RAG on each `/chat` call |
-
-### Embedding Model
-
-Default: `qwen3-embedding:0.6b` (1024-dimensional vectors). This is the unquantized variant — smaller models degrade disproportionately from quantization. Configurable via `EMBED_MODEL` and `EMBED_DIM`.
 
 ### Context Summarization
 
@@ -176,9 +181,8 @@ When the total token count of a conversation exceeds `SUMMARIZE_THRESHOLD` (defa
 
 Gemma 4 supports native thinking via Ollama's `think=True` parameter. The SDK automatically separates `message.thinking` (internal reasoning) from `message.content` (final answer). The orchestrator:
 - Passes `think=True` on every chat call
-- Logs the thinking trace length server-side (`[THINKING] N chars`)
+- Logs the thinking trace length server-side
 - Never streams or returns the thinking trace to the client
-- Stores only the final answer content in RAG
 
 ## Testing
 
@@ -186,12 +190,12 @@ Gemma 4 supports native thinking via Ollama's `think=True` parameter. The SDK au
 # Test TSS2026 UDP connectivity (requires running TSS server)
 uv run python test_tss_udp.py
 
-# Test Gemma 4 model + tool calling
+# Quick model test
 uv run python -c "
 import asyncio
 from llm_provider import OllamaProvider
 async def test():
-    p = OllamaProvider(host='http://127.0.0.1:11434')
+    p = OllamaProvider(host='http://localhost:11434')
     r = await p.chat(model='gemma4:26b', messages=[{'role':'user','content':'Hello'}])
     print(f'Content: {r.content}')
     print(f'Thinking: {len(r.thinking)} chars' if r.thinking else 'No thinking')
@@ -201,5 +205,5 @@ asyncio.run(test())
 
 ## Security
 
-- MCP servers can expose file system access or execute commands. Do not expose port 8000 to untrusted networks.
+- MCP servers can expose file system access or execute commands. Do not expose port 13853 to untrusted networks.
 - The `.env` file is in `.gitignore`.

@@ -24,20 +24,28 @@ from llm_provider import get_provider
 from context_manager import context_manager
 from context_summarizer import context_summarizer
 from mcp_client import mcp_client
-from rag_service import rag_service
+# from rag_service import rag_service  # disabled for MVP — re-enable for RAG
 
 # ---------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------
 
 _BASE_SYSTEM_PROMPT = (
-    f"You are a helpful, rigorous assistant powered by {LLM_MODEL}. "
-    "Respond concisely, do not be verbose. "
+    f"Your name is Luna, developed by Columbia's Lunar Lions SUITS team. "
+    "You are a helpful, rigorous assistant for an EVA (Astronaut) on the mission. "
+    "Respond extremely concisely, do not be verbose. For numerical data, be extremely concise "
+    "like Oxygen: 94%; CO2: 0.5%; instead of useless verbosity. Mission critical data and responses "
+    "should not include excessive verbage, greetings, thank yous, or other miscellaneous text. "
+    "Respond with text only, not other formats like markdown. "
     "You have access to tools provided by external servers via the "
     "Model Context Protocol (MCP). Use them when needed to answer "
     "the user's request accurately. If you call a tool, wait for "
-    "its result before generating your final answer."
-)
+    "its result before generating your final answer. "
+    "You are currently running for the SUITS 2026 mission, which is "
+    "a simulated lunar environment. If the question is not related to the mission, "
+    "politely decline to answer. The summary of what the astronaut is doing is in the docs."
+    " "
+)# change system prompt to be ready later.
 
 
 def _build_system_prompt(tools: list[dict]) -> str:
@@ -316,20 +324,21 @@ async def chat(request: ChatRequest):
             ),
         )
 
-    # --- RAG: retrieve relevant past conversation context ---
-    rag_context, dynamic_budget = await rag_service.retrieve_context(
-        query=user_query,
-        budget_limit=dynamic_budget,
-    )
+    # --- RAG disabled for MVP — re-enable for semantic retrieval ---
+    # rag_context, dynamic_budget = await rag_service.retrieve_context(
+    #     query=user_query,
+    #     budget_limit=dynamic_budget,
+    # )
+    rag_context = ""
     rag_tokens = 0
-    if rag_context:
-        rag_tokens = context_manager.count_tokens(rag_context)
+    # if rag_context:
+    #     rag_tokens = context_manager.count_tokens(rag_context)
 
     # --- Build the message history ---
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
-    if rag_context:
-        messages.append({"role": "system", "content": rag_context})
+    # if rag_context:
+    #     messages.append({"role": "system", "content": rag_context})
 
     messages.extend(base_messages[1:])
 
@@ -483,15 +492,15 @@ async def chat(request: ChatRequest):
     else:
         final_content = "Unable to complete the request within the tool-call limit."
 
-    # --- Store conversation turn into RAG (fire-and-forget) ---
-    if final_content:
-        asyncio.create_task(
-            rag_service.store_conversation_turn(
-                user_message=user_query,
-                assistant_reply=final_content,
-                tool_calls_log=tool_calls_log if tool_calls_log else None,
-            )
-        )
+    # --- RAG storage disabled for MVP — re-enable for conversation memory ---
+    # if final_content:
+    #     asyncio.create_task(
+    #         rag_service.store_conversation_turn(
+    #             user_message=user_query,
+    #             assistant_reply=final_content,
+    #             tool_calls_log=tool_calls_log if tool_calls_log else None,
+    #         )
+    #     )
 
     # --- Return the response ---
     if request.stream:
@@ -558,4 +567,4 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=13853, reload=False)

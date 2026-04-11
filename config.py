@@ -8,7 +8,7 @@ import urllib.request
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 def _detect_local_ip() -> str:
@@ -39,6 +39,8 @@ def _normalise_host(host: str) -> str:
         return ""
     if "://" not in value:
         value = f"http://{value}"
+    # 0.0.0.0 is a server bind-all address — replace with localhost for client use
+    value = value.replace("://0.0.0.0", "://localhost")
     return value
 
 
@@ -66,15 +68,11 @@ def _resolve_ollama_host(primary_host: str, fallback_host: str) -> str:
     return candidates[0] if candidates else "http://127.0.0.1:11434"
 
 
-# Ollama Connection (always needed for embeddings)
-OLLAMA_IP = os.getenv("OLLAMA_IP") or _detect_local_ip()
-_OLLAMA_PRIMARY_HOST = _normalise_host(
-    os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+# Ollama Connection
+# Use exactly what's configured — connectivity errors are handled per-request.
+OLLAMA_HOST = _normalise_host(
+    os.getenv("OLLAMA_HOST", "http://localhost:11434")
 )
-_OLLAMA_FALLBACK_HOST = _normalise_host(
-    os.getenv("OLLAMA_FALLBACK_HOST", f"http://{OLLAMA_IP}:11434")
-)
-OLLAMA_HOST = _resolve_ollama_host(_OLLAMA_PRIMARY_HOST, _OLLAMA_FALLBACK_HOST)
 
 # LLM Provider Selection
 # Supported: "ollama" (default), "afm", "llamacpp"
