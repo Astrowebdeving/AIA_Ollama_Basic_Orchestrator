@@ -7,6 +7,7 @@ ENV/
 env.bak/
 venv.bak/
 docs/
+runtime/
 
 # Database files (safety net)
 *.db
