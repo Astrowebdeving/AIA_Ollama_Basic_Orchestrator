@@ -418,12 +418,23 @@ def _build_assistant_history_message(
     return message
 
 
-def _build_tool_history_message(content: str, tool_call_id: str | None) -> dict:
-    """Format a tool result message for the active provider."""
+def _build_tool_history_message(
+    content: str,
+    tool_call_id: str | None,
+    images: list[str] | None = None,
+) -> dict:
+    """Format a tool result message for the active provider.
+
+    When *images* is provided (list of base64 strings), the images are
+    attached so that the LLM can see them directly via Ollama's vision
+    support instead of relying on a text-only description.
+    """
     message: dict[str, Any] = {
         "role": "tool",
         "content": content,
     }
+    if images:
+        message["images"] = images
     if LLM_PROVIDER != "ollama" and tool_call_id:
         message["tool_call_id"] = tool_call_id
     return message
@@ -638,6 +649,11 @@ async def _chat_with_history(request: ChatRequest):
             max_context=MAX_CONTEXT_TOKENS,
         )
 
+        # Strip base64 images from history now that the LLM has seen them.
+        # Images are only needed for the single inference call; keeping them
+        # wastes ~3-5 K tokens per high-res image on every future turn.
+        messages = context_summarizer._strip_images(messages)
+
         assistant_msg = response
 
         # No tool calls -> we have a final answer
@@ -686,7 +702,13 @@ async def _chat_with_history(request: ChatRequest):
                 # Execute via MCP
                 raw_result = await mcp_client.execute_tool(tool_name, tool_args)
 
-            # Log for RAG storage
+            # Separate base64 images from text when tool returns vision data
+            tool_images: list[str] | None = None
+            if isinstance(raw_result, dict):
+                tool_images = raw_result.get("images")
+                raw_result = raw_result.get("text", "")
+
+            # Log for RAG storage (text only, not base64 blobs)
             tool_calls_log.append({
                 "name": tool_name,
                 "arguments": tool_args,
@@ -709,7 +731,7 @@ async def _chat_with_history(request: ChatRequest):
             tool_result_tokens += result_tokens
 
             messages.append(
-                _build_tool_history_message(raw_result, call["id"])
+                _build_tool_history_message(raw_result, call["id"], images=tool_images)
             )
             dynamic_budget = context_manager.get_dynamic_budget(
                 _count_request_tokens(messages, ollama_tools)

@@ -159,10 +159,12 @@ class McpClient:
     # Tool execution
     # ------------------------------------------------------------------
 
-    async def execute_tool(self, tool_name: str, arguments: dict) -> str:
+    async def execute_tool(self, tool_name: str, arguments: dict) -> str | dict:
         """
         Route a tool call to the correct MCP server and return the
-        result as a plain string (ready for the LLM context).
+        result as a plain string (ready for the LLM context), or as a
+        dict with ``{"text": ..., "images": [...]}`` when the tool
+        returns image content for direct vision injection.
         """
         server_name = self._tool_to_server.get(tool_name)
         if not server_name:
@@ -177,9 +179,15 @@ class McpClient:
 
             # CallToolResult.content is a list of content blocks
             # Each block has a .type and .text (for text blocks)
+            # or .type=="image" with .data (base64) and .mimeType
             parts = []
+            images: list[str] = []   # base64 strings
             for block in result.content:
-                if hasattr(block, "text"):
+                if hasattr(block, "type") and block.type == "image":
+                    # ImageContent — collect base64 for vision injection
+                    if hasattr(block, "data"):
+                        images.append(block.data)
+                elif hasattr(block, "text"):
                     parts.append(block.text)
                 else:
                     # Fallback: serialise the block
@@ -189,6 +197,11 @@ class McpClient:
 
             if result.isError:
                 return f"[TOOL ERROR] {output}"
+
+            # If images were returned, give the orchestrator both text + images
+            if images:
+                return {"text": output, "images": images}
+
             return output
 
         except Exception as e:

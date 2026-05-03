@@ -39,9 +39,38 @@ class ContextSummarizer:
 
     @staticmethod
     def _format_message(message: dict) -> str:
+        """Convert a message dict to a text line for summarization.
+
+        If the message carried base64 images (from ``inspect_image``),
+        note the presence so the summary records that an image was
+        consulted — but never include the raw base64 data.
+        """
         role = message.get("role", "unknown")
         content = message.get("content", "")
+        images = message.get("images")
+        if images:
+            content += f" [attached {len(images)} image(s) for vision analysis]"
         return f"{role}: {content}"
+
+    @staticmethod
+    def _strip_images(messages: list[dict]) -> list[dict]:
+        """Remove base64 ``images`` from messages, leaving a text note.
+
+        This is used after the LLM has already seen and responded to the
+        images — the visual tokens are dead weight from that point on
+        (~3-5 K tokens per high-res image).
+        """
+        cleaned: list[dict] = []
+        for msg in messages:
+            if "images" in msg:
+                msg = dict(msg)  # shallow copy to avoid mutating originals
+                n = len(msg.pop("images"))
+                # Leave a breadcrumb so future turns know an image was here
+                existing = msg.get("content", "")
+                if "[image data stripped" not in existing.lower():
+                    msg["content"] = existing + f" [image data stripped; {n} image(s) were shown to assistant]"
+            cleaned.append(msg)
+        return cleaned
 
     @staticmethod
     def _split_text_to_token_budget(text: str, token_budget: int) -> list[str]:
@@ -206,6 +235,11 @@ class ContextSummarizer:
                 "role": "user",
                 "content": _SUMMARY_PREFIX + summary_text,
             }
+
+            # Strip base64 images from surviving recent messages.
+            # The LLM has already seen and responded to these images;
+            # keeping the raw data wastes 3-5 K tokens per image.
+            recent_turns = self._strip_images(recent_turns)
 
             return [system_msg, summary_msg] + recent_turns
 

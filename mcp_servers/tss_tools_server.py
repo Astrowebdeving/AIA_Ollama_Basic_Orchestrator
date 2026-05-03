@@ -12,6 +12,7 @@ The orchestrator connects to this server via STDIO transport.
 """
 
 import base64
+import mimetypes
 import sys
 from pathlib import Path
 
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import TSS_UDP_HOST, TSS_UDP_PORT, TSS_UDP_TIMEOUT, OLLAMA_HOST, LLM_MODEL
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import ImageContent, TextContent, Tool
 
 import ollama as ollama_sdk
 from tss_udp_client import TssUdpClient, TssUdpError
@@ -250,10 +251,11 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="inspect_image",
             description=(
-                "Analyze an image from docs/ using Gemma 4 vision. "
+                "Load an image from docs/ directly into your visual context. "
                 "Use for maps, diagrams, equipment photos, or any visual reference. "
-                "Provide a question about the image for targeted analysis. "
-                "Example: inspect_image('maps/annotated/dust-map.png', 'Where are the keep-out zones?')."
+                "The image will be injected into your context so you can see it yourself. "
+                "Ask your question about the image in your NEXT message after receiving the result. "
+                "Example: inspect_image('maps/annotated/dust-map.png')."
             ),
             inputSchema={
                 "type": "object",
@@ -261,10 +263,6 @@ async def list_tools() -> list[Tool]:
                     "filename": {
                         "type": "string",
                         "description": "Image path relative to docs/ (e.g. 'maps/annotated/dust-map.png').",
-                    },
-                    "question": {
-                        "type": "string",
-                        "description": "What to analyze or describe in the image.",
                     },
                 },
                 "required": ["filename"],
@@ -499,10 +497,8 @@ async def _handle_read_doc(arguments: dict) -> list[TextContent]:
 #         return [TextContent(type="text", text=f"Search error: {exc}")]
 
 
-async def _handle_inspect_image(arguments: dict) -> list[TextContent]:
-    """Send an image to Gemma 4 vision for analysis."""
-    import asyncio
-
+async def _handle_inspect_image(arguments: dict) -> list[TextContent | ImageContent]:
+    """Return base64-encoded image for direct injection into the main LLM context."""
     filename = (arguments.get("filename") or "").strip()
     if not filename:
         return [TextContent(type="text", text="Error: filename is required.")]
@@ -525,27 +521,18 @@ async def _handle_inspect_image(arguments: dict) -> list[TextContent]:
     if filepath.suffix.lower() not in _IMAGE_EXTENSIONS:
         return [TextContent(type="text", text=f"'{filename}' is not an image file. Use read_doc for text/PDF files.")]
 
-    question = (arguments.get("question") or "Describe this image in detail.").strip()
-
     try:
-        client = ollama_sdk.Client(host=OLLAMA_HOST)
-        response = await asyncio.to_thread(
-            client.chat,
-            model=LLM_MODEL,
-            messages=[{
-                "role": "user",
-                "content": question,
-                "images": [str(filepath)],
-            }],
-            stream=False,
-        )
-        description = response.message.content or "No description generated."
-        # Cap vision output to prevent context bloat
-        if len(description) > 8000:
-            description = description[:8000] + "... [truncated]"
-        return [TextContent(type="text", text=f"[Image: {filename}]\n{description}")]
+        image_bytes = filepath.read_bytes()
+        b64_data = base64.b64encode(image_bytes).decode("ascii")
+
+        mime_type = mimetypes.guess_type(str(filepath))[0] or "image/png"
+
+        return [
+            TextContent(type="text", text=f"[Image loaded: {filename}]"),
+            ImageContent(type="image", data=b64_data, mimeType=mime_type),
+        ]
     except Exception as exc:
-        return [TextContent(type="text", text=f"Vision error: {exc}")]
+        return [TextContent(type="text", text=f"Image read error: {exc}")]
 
 
 # ---------------------------------------------------------------
