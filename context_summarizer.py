@@ -6,6 +6,18 @@ running token count crosses the configured threshold (default 80k).
 
 This keeps long multi-turn conversations within the context
 window without simply truncating valuable earlier messages.
+
+Image handling
+--------------
+Messages that carried base64 images (from ``inspect_image``) are
+handled specially:
+
+- ``_format_message`` notes the presence of images in the text
+  representation so summaries record that visual references were used.
+- ``_strip_images`` removes base64 data from messages after the LLM
+  has seen them, replacing it with a lightweight text breadcrumb.
+  This is called both by ``main.py`` (immediately after inference)
+  and as a safety net after summarization on recent turns.
 """
 
 from config import SUMMARIZE_THRESHOLD, LLM_MODEL, MAX_CONTEXT_TOKENS

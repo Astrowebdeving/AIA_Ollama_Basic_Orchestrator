@@ -5,7 +5,9 @@ MCP Server — TSS Tools, Document Search & Knowledge
 Provides the LLM with tools for:
   - get_tss_state: on-demand fetch of live TSS telemetry via UDP
   - search_docs / read_doc: grep + read reference documents (text + PDF)
-  - inspect_image: describe/analyze images using Gemma 4 vision
+  - inspect_image: base64-encode an image and return it as ImageContent
+    so the orchestrator injects it directly into the main LLM context
+    (no separate vision call — the main model sees the actual image)
   - search_knowledge: semantic search over conversation history (LanceDB)
 
 The orchestrator connects to this server via STDIO transport.

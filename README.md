@@ -1,6 +1,6 @@
 # LLM Orchestrator
 
-Local LLM orchestrator built with FastAPI, powered by Gemma 4 26B (MoE, 4B active params, Q4\_K\_M) via Ollama. Features native tool calling, built-in reasoning, and MCP tool servers for live NASA SUITS TSS2026 telemetry over UDP, reference document search (text + PDF), and image analysis.
+Local LLM orchestrator built with FastAPI, powered by Gemma 4 26B (MoE, 4B active params, Q4\_K\_M) via Ollama. Features native tool calling, built-in reasoning, and MCP tool servers for live NASA SUITS TSS2026 telemetry over UDP, reference document search (text + PDF), and direct vision analysis via base64 image injection.
 
 ## Quick Start
 
@@ -112,7 +112,7 @@ orchestrator/
 | `get_tss_state` | Fetch live TSS2026 telemetry via UDP. Scopes: `all`, `eva`, `rover`, `ltv`, `ltv_errors`, `vitals`. | 4K chars |
 | `search_docs` | Grep docs/ for a text pattern. Searches text files and PDFs. Returns file:line:match, no surrounding context. | 50 matches |
 | `read_doc` | Read a document or section. Use after search_docs to expand context around a specific line. | 2K default, 8K max |
-| `inspect_image` | Analyze an image from docs/ using Gemma 4 vision. Maps, diagrams, equipment photos. | 8K chars |
+| `inspect_image` | Load an image from docs/ directly into the LLM's visual context via base64 injection. The main LLM sees the image itself (not a second-hand description). Maps, diagrams, equipment photos. | ~3-5K vision tokens per image |
 
 The LLM decides when to call these tools based on the user's prompt. There is no auto-injection and no background polling.
 
@@ -168,14 +168,24 @@ User -> POST /chat
    |-- get_tss_state(scope=eva) -> UDP to TSS2026 -> live JSON
    |-- search_docs("oxygen") -> grep over docs/ -> file:line matches
    |-- read_doc("procedures.pdf", around_line=42) -> context excerpt
-   |-- inspect_image("maps/dust-map.png") -> Gemma 4 vision analysis
+   |-- inspect_image("maps/dust-map.png") -> base64 injected into LLM context
 6. Tool results fed back -> model generates final answer
+   |-- If images were injected, base64 is stripped after the LLM responds
+   |   (images exist in context for exactly one inference call)
 7. Return response (content only, no thinking trace)
 ```
 
 ### Context Summarization
 
 When the total token count of a conversation exceeds `SUMMARIZE_THRESHOLD` (default 80k), older messages are automatically compressed via the LLM into a single summary message. The 4 most recent messages are always kept intact.
+
+**Image handling during summarization:**
+- Messages that carried base64 images are noted in the summary text (e.g., "attached 1 image for vision analysis") so the summary records that visual references were consulted.
+- Base64 image data is **never** included in the summary input — only the text labels are summarized.
+- After summarization, any images surviving in the recent (unsummarized) messages are stripped, since the LLM has already seen and responded to them.
+
+**Immediate image stripping (pre-summarization):**
+- Images are stripped from the conversation history immediately after the LLM processes them in `main.py`. This means base64 data exists in context for exactly **one** inference call, then is replaced with a lightweight text note. A single high-res map (~3,900×2,900 px) costs ~5,000 vision tokens for that one turn, not for the entire conversation.
 
 ### Gemma 4 Reasoning
 
