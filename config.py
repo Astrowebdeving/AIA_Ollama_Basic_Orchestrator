@@ -91,14 +91,28 @@ EMBED_DIM = int(os.getenv("EMBED_DIM", 1024))
 
 # Tokenizer — must match the active chat model for accurate token counting.
 # Auto-selected based on provider if not explicitly set.
+# Tokenizer files are pre-downloaded into tokenizer_cache/ so the orchestrator
+# can start without internet access (required for field / local-network use).
 _DEFAULT_TOKENIZERS = {
     "ollama": "google/gemma-4-26B-A4B-it",
-    "afm": "Qwen/Qwen3-35B-A3B",
+    "afm": "Qwen/Qwen3.5-35B-A3B",
     "llamacpp": "google/gemma-4-26B-A4B-it",
 }
-TOKENIZER_NAME = os.getenv(
-    "TOKENIZER_NAME",
-    _DEFAULT_TOKENIZERS.get(LLM_PROVIDER, "google/gemma-4-26B-A4B-it"),
+_TOKENIZER_CACHE_DIR = Path(__file__).resolve().parent / "tokenizer_cache"
+
+def _resolve_tokenizer(name: str) -> str:
+    """Return a local path to pre-downloaded tokenizer files if available,
+    otherwise fall back to the HF model ID (requires internet)."""
+    local_dir = _TOKENIZER_CACHE_DIR / name.replace("/", "--")
+    if local_dir.is_dir() and (local_dir / "tokenizer.json").exists():
+        return str(local_dir)
+    return name
+
+TOKENIZER_NAME = _resolve_tokenizer(
+    os.getenv(
+        "TOKENIZER_NAME",
+        _DEFAULT_TOKENIZERS.get(LLM_PROVIDER, "google/gemma-4-26B-A4B-it"),
+    )
 )
 
 # Token Budgeting (model context window — both Gemma 3 27B and Qwen 3.5 support 128k)

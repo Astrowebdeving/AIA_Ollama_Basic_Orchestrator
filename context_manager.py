@@ -1,4 +1,5 @@
 import json
+import warnings
 from typing import Any
 
 from transformers import AutoTokenizer
@@ -11,8 +12,18 @@ class ContextManager:
         
     def load_tokenizer(self):
         if not self.tokenizer:
-            # AutoTokenizer handles both fast and slow tokenizers for any model
-            self.tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+            # Suppress harmless "model of type gemma4 → type ''" architecture warning
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="You are using a model of type",
+                )
+                # local_files_only=True ensures no network call is ever made.
+                # TOKENIZER_NAME is resolved to a local path by config.py when
+                # pre-downloaded files exist in tokenizer_cache/.
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    TOKENIZER_NAME, local_files_only=True
+                )
 
     def count_message_tokens(
         self,

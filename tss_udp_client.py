@@ -48,7 +48,7 @@ class TssUdpClient:
 
     def __init__(
         self,
-        host: str = "127.0.0.1",
+        host: str = "192.168.50.110",
         port: int = 14141,
         timeout: float = 2.0,
         retries: int = 2,

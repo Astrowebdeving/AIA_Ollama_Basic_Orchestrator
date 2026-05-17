@@ -65,7 +65,8 @@ LLM_API_BASE=              # auto-set per provider if empty
 # (Ollama's server bind address), the orchestrator automatically remaps it to localhost.
 OLLAMA_HOST=http://localhost:11434
 
-# Tokenizer -- auto-selected per provider if not set
+# Tokenizer -- auto-resolved to local tokenizer_cache/ dir if pre-downloaded.
+# Falls back to HF model ID (requires internet) if local files are missing.
 # TOKENIZER_NAME=google/gemma-4-26B-A4B-it
 
 # Context management
@@ -84,8 +85,37 @@ TSS_UDP_TIMEOUT=2.0
 | Provider | Default API base | Default model | Default tokenizer | Notes |
 |----------|-----------------|---------------|-------------------|-------|
 | `ollama` | `http://localhost:11434` | `gemma4:26b` | `google/gemma-4-26B-A4B-it` | Full Ollama SDK, native thinking + tools |
-| `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | `Qwen/Qwen3-35B-A3B` | OpenAI-compatible (AFM/MLX) |
+| `afm` | `http://localhost:9999` | `mlx-community/Qwen3.5-35B-A3B-4bit` | `Qwen/Qwen3.5-35B-A3B` | OpenAI-compatible (AFM/MLX) |
 | `llamacpp` | `http://localhost:8080` | `gemma4` | `google/gemma-4-26B-A4B-it` | OpenAI-compatible (llama-server) |
+
+## Offline Tokenizer Cache
+
+The orchestrator uses a HuggingFace tokenizer for accurate token counting and context budgeting. Tokenizer files are **pre-downloaded** into `tokenizer_cache/` so the orchestrator starts without internet access — required for field deployment on a local network.
+
+```
+tokenizer_cache/
+  google--gemma-4-26B-A4B-it/    # Gemma 4 tokenizer (used by ollama + llamacpp providers)
+    tokenizer.json
+    tokenizer_config.json
+    chat_template.jinja
+```
+
+`config.py` automatically resolves the HF model ID (e.g. `google/gemma-4-26B-A4B-it`) to a local path if matching files exist in `tokenizer_cache/`. The directory name uses `--` in place of `/` (e.g. `google--gemma-4-26B-A4B-it`). If no local files are found, it falls back to downloading from HuggingFace (requires internet).
+
+**To pre-download a tokenizer for a new provider/model:**
+
+```bash
+uv run python -c "
+from transformers import AutoTokenizer
+import os
+name = 'google/gemma-4-26B-A4B-it'  # change to the HF model ID
+save_dir = os.path.join('tokenizer_cache', name.replace('/', '--'))
+os.makedirs(save_dir, exist_ok=True)
+tok = AutoTokenizer.from_pretrained(name)
+tok.save_pretrained(save_dir)
+print(f'Saved to {save_dir}')
+"
+```
 
 ## Architecture
 
@@ -98,6 +128,7 @@ orchestrator/
   mcp_client.py            MCP server lifecycle, tool discovery, tool execution
   context_manager.py       Token counting, budget calculation, truncation
   context_summarizer.py    Auto-summarizes when conversation exceeds 80k tokens
+  tokenizer_cache/         Pre-downloaded HF tokenizer files (offline operation)
   docs/                    Reference documents searchable by the LLM (text, PDF, images)
   mcp_servers/
     tss_tools_server.py    MCP server: get_tss_state, search_docs, read_doc, inspect_image
