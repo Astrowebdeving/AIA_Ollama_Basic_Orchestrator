@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from config import (
     LLM_MODEL, LLM_PROVIDER, LLM_API_BASE, MAX_CONTEXT_TOKENS,
-    OLLAMA_HOST,
+    OLLAMA_HOST, OLLAMA_KEEP_ALIVE, OLLAMA_PREWARM,
 )
 from llm_provider import get_provider
 from context_manager import context_manager
@@ -55,14 +55,38 @@ DCU:, HMD:, NAV:, and LTV:. Ask one short clarifying question only when needed.
 If a request is unrelated to the EVA mission, politely decline in one sentence.
 
 Voice transcription tolerance:
-User messages come from speech-to-text and may contain wrong words, fragments,
-or near-homophones. If a request sounds like a garbled version of an EVA task,
-telemetry request, procedure name, acronym, location, or piece of equipment,
-infer the most likely mission-related meaning from context and proceed. If the
-inference would affect safety, switch positions, navigation, or irreversible
-procedure steps and confidence is low, ask one short clarification question.
-Do not reject plausible mission-related requests just because the wording is
-imperfect.
+User messages come from a Magic Leap 2 headset worn by the EV astronaut. They
+may contain Vosk/MLVoice speech-to-text artifacts, wrong words, fragments, or
+near-homophones. If a request sounds like a garbled version of an EVA task,
+telemetry request, procedure name, acronym, location, Unity headset command, or
+piece of equipment, infer the most likely mission-related meaning from context
+and proceed. If the inference would affect safety, switch positions, navigation,
+or irreversible procedure steps and confidence is low, ask one short
+clarification question. Do not reject plausible mission-related requests just
+because the wording is imperfect. Treat "send recording" as a Vosk
+end-of-message/control artifact and ignore it unless the EV is explicitly
+asking about that command.
+
+Magic Leap / Unity headset context:
+The EV is operating a Unity app in the Magic Leap 2 headset with scenes named
+Starter, Egress, Mission, LTV, and Ingress. Voice scene transitions are
+scene-gated; a command may exist but only work from its configured source scene.
+"Hey Luna" and the recording button start/toggle Vosk recording for Luna.
+During recording, partial transcripts can route scene transitions, minimap
+navigation, or LTV repair entry before the final text is sent to Luna. HUD
+commands are UI-only: "clear display" hides HUDRoot and "show display" restores
+it; they do not stop telemetry, alerts, procedures, navigation, or TSS polling.
+Egress and ingress scenes display, speak, and auto-advance checklist steps based
+on TSS switch states or timed waits, then return to Mission after completion.
+The LTV scene queues current TSS error_procedures with needs_resolved=true,
+shows one repair step at a time, and verifies completion against TSS after the
+final step; "next step" does not prove the repair is fixed. New LTV errors may
+appear mid-repair. Minimap voice navigation draws a headset path to LTV1, LTV2,
+or base, but may use a straight-line fallback and is not proof of hazard
+clearance. Treat missing or stale headset/TSS telemetry as a data-source problem,
+not as a zero, resolved, or nominal value. If the EV asks about Unity runtime
+behavior, read headset_unity_runtime.md. If the EV asks about exact voice
+aliases, read headset_voice_commands.md.
 
 Accuracy and tool use:
 Never invent live telemetry, map details, coordinates, switch states, LTV
@@ -82,6 +106,8 @@ EVA timeline: procedures/ev-team-procedure-timeline.pdf
 LTV repair procedures: procedures/ltv-repair-procedures.pdf
 EVA coordinates: procedures/ev-team-coordinates.pdf
 EVA telemetry ranges: telemetry_ranges/eva-telemetry-ranges.pdf
+Magic Leap / Unity voice commands: headset_voice_commands.md
+Magic Leap / Unity runtime behavior: headset_unity_runtime.md
 UIA photo: peripherals/uia.jpeg
 DCU photos: peripherals/dcu.jpeg, peripherals/dcu_front.jpg,
 peripherals/dcu_top.jpg
@@ -96,6 +122,7 @@ peripherals/task_board/alt_box_close_up.jpg,
 peripherals/task_board/open_fuse_box_close_up.jpg
 LTV Task Board notes: peripherals/task_board/README.md
 Rock-yard map: maps/annotated/rock-yard.tiff
+Raw rock-yard map: maps/raw/rock-yard.tiff
 Keep-out zones map: maps/annotated/rock-yard-keep-out-zones.tiff
 Dust/DUST map: maps/annotated/dust-map.png
 When calling document tools, use these paths relative to docs/.
@@ -113,6 +140,13 @@ If asked "what does ASITS/RIL/POPS mean", answer from known acronyms or verify
 in docs if uncertain.
 If asked for current vitals, switch states, LTV location, LTV errors, or suit
 status, fetch TSS telemetry rather than relying on conversation memory.
+If asked whether a Magic Leap/Unity voice command exists, what phrase to say,
+or how to change scenes/HUD/minimap/LTV repair views by voice, read
+headset_voice_commands.md and answer with the exact listed aliases and scene
+limits.
+If asked why a Unity scene command did nothing, why a scene changed, how the
+headset HUD/minimap/procedure/LTV repair UI behaves, or whether a displayed path
+or repair step proves safety/completion, read headset_unity_runtime.md.
 If asked to identify a physical task-board component, switch, LED, fuse, cable,
 or panel location, inspect the relevant task-board overview or close-up image
 before giving visual guidance.
@@ -350,6 +384,7 @@ MAX_TOOL_ROUNDS = 10  # Safety valve against infinite tool loops
 # LLM provider (chat). Embeddings always stay on Ollama via rag_service.
 _llm = get_provider(
     LLM_PROVIDER, ollama_host=OLLAMA_HOST, api_base=LLM_API_BASE,
+    ollama_keep_alive=OLLAMA_KEEP_ALIVE,
 )
 
 # Per-request context tracking (updated during /chat, queryable via /context)
@@ -553,6 +588,14 @@ async def lifespan(app: FastAPI):
             f"[STARTUP] ✗ Cannot reach {LLM_PROVIDER} backend "
             f"at {llm_host}: {error}"
         )
+
+    if LLM_PROVIDER == "ollama" and OLLAMA_PREWARM and llm_health.get("reachable", False):
+        print(f"[STARTUP] Pre-warming '{LLM_MODEL}' with keep_alive={OLLAMA_KEEP_ALIVE} …")
+        prewarm = await _llm.prewarm(model=LLM_MODEL)
+        if prewarm.get("ok"):
+            print("[STARTUP] ✓ Ollama model pre-warmed")
+        else:
+            print(f"[STARTUP] ⚠ Ollama prewarm skipped/failed: {prewarm}")
 
     print("[STARTUP] Connecting to MCP servers …")
     await mcp_client.connect_all()

@@ -68,6 +68,10 @@ class LLMProvider(ABC):
     async def health_check(self) -> dict:
         """Return provider health status."""
 
+    async def prewarm(self, *, model: str) -> dict:
+        """Optionally load the model before the first user request."""
+        return {"ok": False, "skipped": True}
+
 
 # ---------------------------------------------------------------
 # Ollama provider (default)
@@ -76,9 +80,10 @@ class LLMProvider(ABC):
 class OllamaProvider(LLMProvider):
     """Chat via the Ollama Python SDK. Current default."""
 
-    def __init__(self, host: str):
+    def __init__(self, host: str, keep_alive: str | None = None):
         self._client = ollama_sdk.Client(host=host)
         self.host = host
+        self.keep_alive = keep_alive or None
 
     async def chat(
         self, *, model, messages, tools=None, max_context=None,
@@ -89,6 +94,8 @@ class OllamaProvider(LLMProvider):
             "stream": False,
             "think": True,  # Gemma 4 reasoning — SDK separates thinking/content
         }
+        if self.keep_alive:
+            kwargs["keep_alive"] = self.keep_alive
         if tools:
             kwargs["tools"] = tools
         if max_context:
@@ -134,6 +141,28 @@ class OllamaProvider(LLMProvider):
             tool_calls=tool_calls,
             thinking=thinking,
         )
+
+    async def prewarm(self, *, model: str) -> dict:
+        if not self.keep_alive:
+            return {"ok": False, "skipped": True, "reason": "keep_alive unset"}
+
+        try:
+            result = await asyncio.to_thread(
+                self._client.generate,
+                model=model,
+                prompt="",
+                stream=False,
+                keep_alive=self.keep_alive,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+        return {
+            "ok": True,
+            "model": model,
+            "keep_alive": self.keep_alive,
+            "load_duration": getattr(result, "load_duration", None),
+        }
 
     async def list_models(self) -> list[str]:
         result = await asyncio.to_thread(self._client.list)
@@ -313,6 +342,7 @@ def get_provider(
     *,
     ollama_host: str = "",
     api_base: str = "",
+    ollama_keep_alive: str | None = None,
 ) -> LLMProvider:
     """
     Instantiate the appropriate provider.
@@ -329,7 +359,7 @@ def get_provider(
     name = provider_name.lower().strip()
 
     if name == "ollama":
-        return OllamaProvider(host=ollama_host)
+        return OllamaProvider(host=ollama_host, keep_alive=ollama_keep_alive)
 
     if name == "afm":
         base = api_base or "http://localhost:9999"

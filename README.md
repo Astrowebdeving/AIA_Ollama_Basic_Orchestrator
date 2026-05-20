@@ -1,6 +1,6 @@
 # LLM Orchestrator
 
-Local LLM orchestrator built with FastAPI, powered by Gemma 4 26B (MoE, 4B active params, Q4\_K\_M) via Ollama. Features native tool calling, built-in reasoning, and MCP tool servers for live NASA SUITS TSS2026 telemetry over UDP, reference document search (text + PDF), and direct vision analysis via base64 image injection.
+Local LLM orchestrator built with FastAPI, powered by Gemma 4 26B (MoE, 4B active params, Q4\_K\_M) via Ollama. Features native tool calling, built-in reasoning, and MCP tool servers for live NASA SUITS TSS2026 telemetry over UDP, reference document search (text + PDF), direct vision analysis via base64 image injection, and Magic Leap 2 headset voice/runtime context for the EVA assistant.
 
 ## Quick Start
 
@@ -64,9 +64,11 @@ LLM_API_BASE=              # auto-set per provider if empty
 # Ollama host -- always localhost. If OLLAMA_HOST is set system-wide to 0.0.0.0
 # (Ollama's server bind address), the orchestrator automatically remaps it to localhost.
 OLLAMA_HOST=http://localhost:11434
+OLLAMA_KEEP_ALIVE=30m
+OLLAMA_PREWARM=true
 
 # Tokenizer -- auto-resolved to local tokenizer_cache/ dir if pre-downloaded.
-# Falls back to HF model ID (requires internet) if local files are missing.
+# Startup expects local tokenizer files for offline field use.
 # TOKENIZER_NAME=google/gemma-4-26B-A4B-it
 
 # Context management
@@ -79,6 +81,10 @@ TSS_UDP_HOST=10.206.64.189
 TSS_UDP_PORT=14141
 TSS_UDP_TIMEOUT=2.0
 ```
+
+`OLLAMA_PREWARM=true` sends an empty Ollama generate request at startup so the
+chat model is loaded before the first Unity/headset request. `OLLAMA_KEEP_ALIVE`
+is passed through on chat requests to keep the model resident between turns.
 
 ### Provider Defaults
 
@@ -100,7 +106,7 @@ tokenizer_cache/
     chat_template.jinja
 ```
 
-`config.py` automatically resolves the HF model ID (e.g. `google/gemma-4-26B-A4B-it`) to a local path if matching files exist in `tokenizer_cache/`. The directory name uses `--` in place of `/` (e.g. `google--gemma-4-26B-A4B-it`). If no local files are found, it falls back to downloading from HuggingFace (requires internet).
+`config.py` automatically resolves the HF model ID (e.g. `google/gemma-4-26B-A4B-it`) to a local path if matching files exist in `tokenizer_cache/`. The directory name uses `--` in place of `/` (e.g. `google--gemma-4-26B-A4B-it`). `context_manager.py` loads tokenizer files with `local_files_only=True`, so field/offline startup expects the tokenizer to already be present locally.
 
 **To pre-download a tokenizer for a new provider/model:**
 
@@ -129,7 +135,7 @@ orchestrator/
   context_manager.py       Token counting, budget calculation, truncation
   context_summarizer.py    Auto-summarizes when conversation exceeds 80k tokens
   tokenizer_cache/         Pre-downloaded HF tokenizer files (offline operation)
-  docs/                    Reference documents searchable by the LLM (text, PDF, images)
+  docs/                    Mission/headset references searchable by the LLM (text, PDF, images)
   mcp_servers/
     tss_tools_server.py    MCP server: get_tss_state, search_docs, read_doc, inspect_image
   rag_service.py           Conversation history via LanceDB (disabled, preserved for later)
@@ -184,20 +190,35 @@ Place reference documents in `docs/` (supports subdirectories). The LLM searches
 
 Supported formats: Markdown, plain text, PDF (via PyMuPDF). Images can be analyzed via `inspect_image`.
 
+Current mission/headset references include:
+
+| Path | Purpose |
+|------|---------|
+| `headset_voice_commands.md` | Exact Magic Leap MLVoice/Vosk command aliases, event IDs, scene limits, and `send recording` behavior |
+| `headset_unity_runtime.md` | Unity scene gating, recording-button behavior, HUD/reference-map behavior, egress/ingress automation, LTV verification, minimap caveats, and TSS runtime notes |
+| `mission_description/` | NASA SUITS mission overview and acronym list |
+| `procedures/` | EVA timeline, coordinates, and LTV repair procedures |
+| `telemetry_ranges/` | EVA telemetry nominal/off-nominal ranges |
+| `maps/` | Annotated/raw rock-yard maps, keep-out zones, and DUST map |
+| `peripherals/` | UIA/DCU photos and LTV Task Board overview/close-up photos |
+
 Note: `docs/` is in `.gitignore` — populate it locally with your mission documents. It is not committed to the repository.
 
 ### Data Flow
 
 ```
-User -> POST /chat
+Magic Leap 2 headset / client -> POST /chat
   |
 1. Build message list: [system_prompt] + [user messages]
+   |-- System prompt tells Luna about Vosk/MLVoice artifacts, "send recording",
+   |   Magic Leap Unity scenes, and the headset docs to consult
 2. If total tokens > 80k -> summarize older conversation history
 3. Send to Gemma 4 (with think=True)
 4. Model reasons internally (thinking trace logged, not streamed)
 5. Model decides: answer directly OR call tools
    |-- get_tss_state(scope=eva) -> UDP to TSS2026 -> live JSON
    |-- search_docs("oxygen") -> grep over docs/ -> file:line matches
+   |-- search_docs("show reference map") -> exact headset voice/runtime docs
    |-- read_doc("procedures.pdf", around_line=42) -> context excerpt
    |-- inspect_image("maps/dust-map.png") -> base64 injected into LLM context
 6. Tool results fed back -> model generates final answer

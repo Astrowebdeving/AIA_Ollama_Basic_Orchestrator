@@ -12,7 +12,7 @@ from tss_udp_client import TssUdpClient, TssUdpError
 
 
 async def main():
-    host = os.getenv("TSS_UDP_HOST", "10.206.64.189")
+    host = os.getenv("TSS_UDP_HOST", "172.20.10.6")
     port = int(os.getenv("TSS_UDP_PORT", 14141))
 
     print(f"Testing TSS UDP client against {host}:{port}\n")

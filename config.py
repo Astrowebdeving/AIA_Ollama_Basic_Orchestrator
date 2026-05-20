@@ -11,6 +11,13 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _detect_local_ip() -> str:
     """
     Resolve the Ollama IP with this priority:
@@ -73,6 +80,8 @@ def _resolve_ollama_host(primary_host: str, fallback_host: str) -> str:
 OLLAMA_HOST = _normalise_host(
     os.getenv("OLLAMA_HOST", "http://localhost:11434")
 )
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+OLLAMA_PREWARM = _env_bool("OLLAMA_PREWARM", True)
 
 # LLM Provider Selection
 # Supported: "ollama" (default), "afm", "llamacpp"
